@@ -1395,7 +1395,10 @@ class KiteVision:
             return R, t
 
         x0 = x0.flatten()
+        t0 = datetime.now()
         sparse_A = global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=self.num_cams) 
+        t1 = datetime.now()
+        ego_elapsed = t1 - t0
 
         ls_pars = dict(jac_sparsity=sparse_A,
                     max_nfev=6, 
@@ -1426,7 +1429,7 @@ class KiteVision:
         avg_least_square_conf = self.least_square_conf / (self.img_idx)
 
 
-        print('gba:',self.navcams[0].img_idx, 'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
+        print('gba:',self.navcams[0].img_idx, ego_elapsed.microseconds / 1000.0, 'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
 
     
         if err_level > 5 * avg_least_square_conf:
@@ -1491,7 +1494,7 @@ for img_id in range(kv.num_imgs):
     print('stereo', x1, z1)
     print('===================')
 
-    draw_ofs_x = 500
+    draw_ofs_x = 50
     draw_ofs_y = 500
 
     draw_x0, draw_y0 = int(x)+draw_ofs_x, int(z)+draw_ofs_y    
