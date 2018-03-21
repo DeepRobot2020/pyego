@@ -34,10 +34,7 @@ def concat_images(imga, imgb):
     new_img[:hb,wa:wa+wb]=imgb
     return new_img
 
-def load_kv_nav_config(cfg_file='nav_calib.cfg', num_cams=4):
-    if not os.path.exists(cfg_file):
-        print('Error: ' + cfg_file + ' does not exit')
-        return None, None, None, None 
+def load_kite_config(cfg_file='nav_calib.cfg', num_cams=4):
     cam_matrix = [None] * num_cams
     dist = [None] * num_cams
     cam_rot = [None] * num_cams
@@ -82,6 +79,79 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
         cam_rot[cam_id] = rot
         cam_trans[cam_id] = trans
     return cam_matrix, dist, cam_rot, cam_trans
+
+def load_camera_calib(dataset = 'kitti', calib_file=None, num_cams=4):
+    if not os.path.exists(calib_file):
+        raise ValueError(calib_file + ' does not exsit')
+        return
+    if dataset.lower() == 'kitti':
+        return load_kitti_config(calib_file, num_cams)
+    elif dataset.lower() == 'kite':
+        return load_kite_config(calib_file, num_cams) 
+    else:
+        raise ValueError('unsupported camera calibration')
+
+def get_kitti_calib_path(kitti_base=None, data_seq='01'):
+    seq_path =  os.path.join(kitti_base, 'sequences')
+    seq_path =  os.path.join(seq_path, data_seq)
+    return os.path.join(seq_path, 'calib.txt')
+
+def get_kitti_ground_truth(kitti_base=None, data_seq=None):
+    assert(data_seq is not None)
+    pose_path = os.path.join(kitti_base, 'poses')
+    pose_path = os.path.join(pose_path, data_seq + '.txt')
+    if not os.path.exists(pose_path):
+        return None
+    with open(pose_path) as f:
+	    annotations = f.readlines()
+    return annotations
+
+def load_calib_images(self, calib_img_path='~/vo_data/SN40/calib_data/', num_cams=4, max_imgs=100):
+    cam_files = num_cams * [None]
+    for c in range(num_cams):
+        cam_path = calib_path + 'cam'+ str(c) + '/'
+        img_files = glob.glob(cam_path + '*.jpg')
+        img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
+        cam_files[c] = img_files
+
+    cam_imgs = []
+    for i in range(max_imgs):
+        imgs_x4 = []
+        for c in range(self.num_cams):
+            im = Image.open(cam_files[c][i])
+            imgs_x4.append(np.asarray(im))
+        cam_imgs.append(imgs_x4)
+    return cam_imgs
+
+def read_kitti_image(camera_images, num_cams, img_idx=0):
+    imgs_x4 = []
+    for c in range(num_cams):
+        im = Image.open(camera_images[c][img_idx])
+        imgs_x4.append(np.asarray(im))
+    return imgs_x4
+
+def read_kite_image(camera_images, num_cams=None, img_idx=0):
+    imgs_x4 = pil_split_rotate_navimage_4(camera_images[img_idx])
+    return imgs_x4
+
+
+def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
+    seq_path =  os.path.join(kitti_base, 'sequences')
+    seq_path =  os.path.join(seq_path, data_seq)
+    camera_images = []
+    for c in range(max_cam):
+        images_base= os.path.join(seq_path, 'image_' + str(c))
+        if not os.path.exists(images_base):
+            continue
+        img_files = glob.glob(images_base + '/*.png')
+        img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
+        camera_images.append(img_files)
+    return camera_images
+
+def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4):
+    img_files = glob.glob(kite_base + '*.jpg')
+    img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
+    return img_files
 
 def load_kitti_poses(cfg_file=None):
     lines = [line.rstrip('\n') for line in open(cfg_file)]

@@ -1,7 +1,7 @@
 
 import numpy as np
-import glob, pdb, math
-
+import glob, pdb, math, json
+import warnings
 import os, io, libconf, copy
 import cv2, Image
 
@@ -17,8 +17,69 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from utils import *
 
-# Suppress the precision of numpy
-np.set_printoptions(suppress=True)
+import argparse
+
+parser = argparse.ArgumentParser(
+    description='Compute camera relative pose on input stereo or quad images')
+
+parser.add_argument(
+    '-dataset',
+    '--dataset_type',
+    help='dataset type: (Kite, Kitti, )',
+    default='kitti')
+
+parser.add_argument(
+    '-seq',
+    '--seq_num',
+    type=int,
+    help='sequence number (only fir Kitti)',
+    default=3)
+
+parser.add_argument(
+    '-img',
+    '--images_path',
+    help='path to directory of input images',
+    default='~/vo_data/kitti/dataset')
+
+parser.add_argument(
+    '-calib',
+    '--calib_path',
+    help='path to directory of calibriation file (Kite)',
+    default='~/vo_data/SN40/nav_calib.cfg')
+
+parser.add_argument(
+    '-out',
+    '--output_path',
+    help='path to output test images',
+    default='output')
+
+parser.add_argument(
+    '-json',
+    '--enable_json',
+    type=bool,
+    help='output data to json format',
+    default=False)
+
+parser.add_argument(
+    '-feats',
+    '--num_features',
+    type=int,
+    help='Max number of features',
+    default=64)
+
+parser.add_argument(
+    '-num_cam',
+    '--num_cameras',
+    type=int,
+    help='Max number of cameras used for VO',
+    default=2)
+
+parser.add_argument(
+    '-ransac',
+    '--enable_ransac',
+    type=bool,
+    help='Enable Ransac for Egomotion estimation',
+    default=2)
 
 class PinholeCamera:
     	def __init__(self, width, height, fx, fy, cx, cy, 
@@ -36,13 +97,19 @@ kt_cam = PinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
 
 
 class navcam:
-    def __init__(self,  index, stereo_pair_idx, F, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, max_flow_kpts=64):
+    def __init__(self,  index, stereo_pair_idx, F, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, num_features=64):
         self.calib_K    = intrinsic_mtx
         self.calib_d    = intrinsic_dist
         self.calib_R    = extrinsic_rot
         self.calib_R2   = cv2.Rodrigues(extrinsic_rot)[0]
         self.calib_t    = extrinsic_trans
-        self.max_flow_kpts = max_flow_kpts
+        self.focal      = (intrinsic_mtx[0,0], intrinsic_mtx[1,1])
+        self.pp         = (intrinsic_mtx[:2,2][0], intrinsic_mtx[:2,2][0]) 
+
+        self.focal      = kt_cam.fx
+        self.pp         = (kt_cam.cx, kt_cam.cy) 
+
+        self.num_features = num_features
         self.flow_kpt0 = None
         self.flow_kpt1 = None
         self.flow_kpt2 = None
@@ -50,7 +117,6 @@ class navcam:
         self.flow_kpt4 = None
         self.stereo_pair_cam = None
         self.stereo_pair_idx = stereo_pair_idx 
-        self.cam_obs = np.zeros([4,2], dtype=np.int)
 
         self.stereo_R = None # camera pose rotation in 
         self.stereo_t = None 
@@ -63,11 +129,9 @@ class navcam:
         self.flow_intra_inter0 = None  # original keypoints
         self.flow_intra_inter1 = None  # intra match
         self.flow_intra_inter3 = None  # inter match
-        self.flow_intra_inter_P = None # world point in camera self.index's coordinate system
 
         self.flow_intra0  = None # original keypoints
         self.flow_intra1  = None # intra match
-        self.flow_intra_P = None # world point in camera self.index's coordinate system
 
         self.flow_inter0 = None # original keypoints
         self.flow_inter3 = None # inter match
@@ -83,8 +147,6 @@ class navcam:
         self.img_idx = None
         self.F = F
         self.proj_mtx = None
-        self.focal = kt_cam.fx
-        self.pp = (kt_cam.cx, kt_cam.cy)
         self.least_square_conf = None
 
     def mono_vo(self, abs_scale):
@@ -99,14 +161,12 @@ class navcam:
         except:
             import pdb; pdb.set_trace()
         try:
-            _, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, focal=self.focal, pp = self.pp)
+            _, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, focal=self.focal , pp = self.pp)
         except:
             import pdb; pdb.set_trace()
 
         rot = cv2.Rodrigues(R)[0]
         tr = t
-
-        # print('mon:', self.img_idx, 'est_rot', rot.ravel(), 'est_tras', abs_scale * tr.ravel())
 
         if self.img_idx == 1:
             self.mono_cur_t = t
@@ -117,7 +177,9 @@ class navcam:
                 self.mono_cur_t = self.mono_cur_t + abs_scale*self.mono_cur_R.dot(t) 
                 self.mono_cur_R = R.dot(self.mono_cur_R)
         return rot, tr
-    def set_its_pair(self, right_cam):
+
+    def set_stereo_pair(self, right_cam):
+        '''Set the stereo pair of current camera  '''
         self.stereo_pair_cam = right_cam
 
     def project_to_flow0(self, cam_points):
@@ -385,6 +447,7 @@ class navcam:
         R = cv2.Rodrigues(ba_R)[0]
         t = ba_t
         stereo_R, stereo_t = self.update_camera_pose_egomotion(R, t)
+        # import pdb; pdb.set_trace()
 
 
     def local_bundle_adjustment_ransac(self, init_with_mono=True):
@@ -557,7 +620,7 @@ class navcam:
         if self.curr_img is None:
             print('Warning: curr_img is None')
             return
-        self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, self.max_flow_kpts)
+        self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, self.num_features)
     
     def intra_sparse_optflow(self):
         if self.prev_img is not None:
@@ -729,60 +792,65 @@ class navcam:
             self.intra0 = np.array(intra0)
             self.intra1 = np.array(intra1)
 
-
             if debug:    
                 self.debug_inter_keypoints(out_dir)
                 self.debug_intra_keypoints(out_dir)
                 print(self.img_idx, 'cam_'+ str(self.index ), 'intra_inter:' + str(len(self.flow_intra_inter0)), 'intra:' + str(len(self.flow_intra0)), 'inter:'+str(len(self.flow_inter0)))
+        
+    def searlize_features_for_json(self):
+        feat013_dict = {}
+        feat01_dict = {}
 
+        flow013_0 = self.flow_intra_inter0.tolist()
+        flow013_1 = self.flow_intra_inter1.tolist()
+        flow013_3 = self.flow_intra_inter3.tolist()
 
-     
-class KiteVision:
+        flow01_0 = self.flow_intra0.tolist()
+        flow01_1 = self.flow_intra1.tolist()
+
+        feat013_dict['feats013_0'] = [it.tolist() for it in flow013_0]
+        feat013_dict['feats013_1'] = [it.tolist() for it in flow013_1]
+        feat013_dict['feats013_3'] = [it.tolist() for it in flow013_3]
+        feat01_dict['feats01_0']  = [it.tolist() for it in flow01_0 ]
+        feat01_dict['feats01_1']  = [it.tolist() for it in flow01_1 ]
+        d = {}
+        d['feats013'] = feat013_dict
+        d['feats01'] = feat013_dict
+        return d
+        
+class EgoMotion:
     """Kite vision object"""
-    def __init__(self, calib_file=None, num_cams=4, max_flow_kpts=64, is_kitti=True, kitti_path=None, kitti_seq=None):
-        self.calib_file      = calib_file
-        self.max_flow_kpts   = max_flow_kpts
-        self.navcams         = []
-        self.calib_file = calib_file
-        self.cam_imgs   = None
-        self.cam_setup  = [1, 0, 3, 2]
+    def __init__(self, calib_file=None, num_cams=4, num_features=64, dataset='kitti', input_path=None, data_seq=None, json_output=True, ransac=False):
+        self.num_features = num_features
+        self.navcams      = []
+        self.cam_setup    = [1, 0, 3, 2]
         self.num_imgs = 0
         self.focal = None
-        self.pp = None
-        self.annotations = None
+
         self.trueX, self.trueY, self.trueZ = 0, 0, 0
         self.max_cams = 4
-        self.camera_images = self.max_cams * [None]
+        # Kitti: images of each camera are stored s
+        # Kite: images have been concatenated into one image
+        self.camera_images = None
         self.prev_scale = 1.0
         self.img_idx = -1
         self.least_square_conf = None
-        if is_kitti:
-            self.num_cams = 2
-            kitti_pose_path = os.path.join(kitti_path, 'poses')
-            self.annotations = os.path.join(kitti_pose_path, kitti_seq + '.txt')
-            kitti_seq_path =  os.path.join(kitti_path, 'sequences')
-            kitti_seq_path =  os.path.join(kitti_seq_path, kitti_seq)
-            kitti_calib_file = os.path.join(kitti_seq_path, 'calib.txt')
+        self.dataset = dataset.lower()
+        self.dataset_seq = data_seq
+        self.annotations = get_kitti_ground_truth(input_path, data_seq)
 
-            for c in range(self.num_cams):
-                kitti_images_base= os.path.join(kitti_seq_path, 'image_' + str(c))
-                img_files = glob.glob(kitti_images_base + '/*.png')
-                img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
-                self.camera_images[c] = img_files
+        mtx, dist, rot, trans = load_camera_calib(dataset, calib_file, num_cams)
 
-            mtx, dist, rot, trans = load_kitti_config(kitti_calib_file)
-            assert(len(self.camera_images[0]) == len(self.camera_images[1]))
+        if self.dataset.lower() == 'kitti':
+            self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
             self.num_imgs  = len(self.camera_images[0])
-            num_cams = 2
-            with open(self.annotations) as f:
-			    self.annotations = f.readlines()
-            self.focal = kt_cam.fx
-            self.pp = (kt_cam.cx, kt_cam.cy)
+            self.num_cams = len(self.camera_images)
+        elif self.dataset.lower() == 'kite':
+            self.camera_images = get_kite_image_files(input_path, data_seq, num_cams)
+            self.num_imgs  = len(self.camera_images)
+            self.num_cams = 4
         else:
-            mtx, dist, rot, trans = load_kv_nav_config(calib_file)
-
-        self.num_cams        = num_cams
-        self.cam_obs         = np.zeros([4, 2], dtype=np.int)
+            raise ValueError('Unsupported dataset')
 
         rot_01, trans_01 = rot[1], trans[1]
         rot_10, trans_10 = invert_RT(rot[1], trans[1])
@@ -795,29 +863,37 @@ class KiteVision:
         rot[2], trans[2] = rot_23, trans_23
         rot[3], trans[3] = rot_32, trans_32
 
-        self.calib_K = mtx
-        self.calib_d = dist
-        self.calib_R = rot
-        self.calib_t = trans
-
         self.ego_R = cv2.Rodrigues(np.eye(3))[0]
         self.ego_t = np.zeros([3, 1])
 
         self.pose_R = cv2.Rodrigues(np.eye(3))[0]
         self.pose_t = np.zeros([3, 1])
 
-        F = 4 * [None]
-
-        F[0] = fundmental_matrix(rot[1], trans[1], mtx[0], mtx[1])
-        F[1] = fundmental_matrix(rot[0], trans[0], mtx[1], mtx[0])
-        F[2] = fundmental_matrix(rot[3], trans[3], mtx[2], mtx[3])
-        F[3] = fundmental_matrix(rot[2], trans[2], mtx[3], mtx[2])
-
-
         for c in range(self.num_cams):
-            self.navcams.append(navcam(c, self.cam_setup[c], F[c], mtx[c], dist[c], rot[c], trans[c], max_flow_kpts))
+            left = c
+            right = self.cam_setup[left]
+            F_mtx = fundmental_matrix(rot[right], trans[right], mtx[left], mtx[right])
+            self.navcams.append(navcam(c, self.cam_setup[c], F_mtx, mtx[c], dist[c], rot[c], trans[c], self.num_features))
         for c in range(self.num_cams):
-            self.navcams[c].set_its_pair(self.navcams[self.cam_setup[c]])
+            self.navcams[c].set_stereo_pair(self.navcams[self.cam_setup[c]])
+
+    def write_to_json(self, file_name):
+        if not os.path.exists(file_name):
+            raise AssertionError(file_name + ' does not exit')
+        json_data = {}
+        for i in range(self.num_cams):
+            cur_cam = self.navcams[i]
+            cam_data = {}
+            cam_feats = cur_cam.searlize_features_for_json() 
+            cam_data['features'] = cam_feats
+            cam_data['camera_matrix'] = cur_cam.calib_K.tolist()
+            cam_data['camera_rotation'] = cur_cam.calib_R.tolist()
+            cam_data['camera_translation'] = cur_cam.calib_t.tolist()
+            json_data['camera'+str(i)] = cam_data
+        # write the json object to a file
+        with open(file_name, 'w') as outfile:
+            json.dump(json_data, outfile)
+
 
     def get_abs_scale(self, frame_id):  #specialized for KITTI odometry dataset
         ss = self.annotations[frame_id-1].strip().split()
@@ -849,62 +925,13 @@ class KiteVision:
         for c in range(self.num_cams):        
             self.navcams[c].update_image(imgs_x4)
 
-    def load_recorded_images(self, record_path='./', max_imgs=100):
-        img_files = glob.glob(record_path + '*.jpg')
-        img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
-        cam_imgs = []
-        for file in img_files:
-            imgs_x4 = pil_split_rotate_navimage_4(file)
-            cam_imgs.append(imgs_x4)
-            self.num_imgs  += 1
-            if self.num_imgs  > max_imgs:
-                break
-        self.cam_imgs = cam_imgs
-
-    def read_kitti_image(self, img_idx=0):
-        imgs_x4 = []
-        for c in range(self.num_cams):
-            im = Image.open(self.camera_images[c][img_idx])
-            imgs_x4.append(np.asarray(im))
-        return imgs_x4
-
-    def load_kitti_images(self, img_path='/home/jzhang/vo_data/kitti/dataset/sequences/01/', max_imgs=100):
-        cam_files = self.num_cams * [None]
-        for c in range(self.num_cams):
-            cam_path = img_path + 'image_' + str(c) + '/'
-            img_files = glob.glob(cam_path + '*.png')
-            img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
-            cam_files[c] = img_files
-
-        total_imgs = len(cam_files[0])
-        max_imgs = min(total_imgs, max_imgs)
-        cam_imgs = []
-        for i in range(max_imgs):
-            imgs_x4 = []
-            for c in range(self.num_cams):
-                im = Image.open(cam_files[c][i])
-                imgs_x4.append(np.asarray(im))
-            cam_imgs.append(imgs_x4)
-            self.num_imgs += 1
-        self.cam_imgs = cam_imgs
-
-    def load_calib_images(self, calib_path='/home/jzhang/vo_data/SN40/calib_data/', max_imgs=100):
-        cam_files = self.num_cams * [None]
-        for c in range(self.num_cams):
-            cam_path = calib_path + 'cam'+ str(c) + '/'
-            img_files = glob.glob(cam_path + '*.jpg')
-            img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
-            cam_files[c] = img_files
-
-        cam_imgs = []
-        for i in range(max_imgs):
-            imgs_x4 = []
-            for c in range(self.num_cams):
-                im = Image.open(cam_files[c][i])
-                imgs_x4.append(np.asarray(im))
-            cam_imgs.append(imgs_x4)
-            self.num_imgs += 1
-        self.cam_imgs = cam_imgs
+    def read_one_image(self, img_idx):
+        if self.dataset == 'kitti':
+            return read_kitti_image(self.camera_images, self.num_cams, img_idx)
+        elif self.dataset == 'kite':
+            return read_kite_image(self.camera_images, self.num_cams, img_idx) 
+        else:
+            raise ValueError('read_one_image(): unsupported dataset')
 
     def local_ego_motion_solver(self, cam_list=[0]):
         for c in cam_list:
@@ -1073,7 +1100,6 @@ class KiteVision:
 
         print('gba:',self.navcams[0].img_idx, ego_elapsed.microseconds / 1000.0, 'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
 
-    
         if err_level > 5 * avg_least_square_conf:
             return self.pose_R, self.pose_t
         else:
@@ -1086,71 +1112,94 @@ class KiteVision:
         
 
 
-# kv = KiteVision(calib_file='/home/jzhang/vo_data/SN40/nav_calib.cfg', max_flow_kpts=128, is_kitti=True)
-# bad seq, 03, 05 
-seq = '01'
-kv = KiteVision(kitti_path='/home/jzhang/vo_data/kitti/dataset', kitti_seq=seq, calib_file=None, max_flow_kpts=64, is_kitti=True)
-# kv.load_recorded_images('/home/jzhang/vo_data/SN40/videos/output01.TS.JPEGS/', 100)
-# kv.load_calib_images()
-# kv.load_kitti_images('/home/jzhang/vo_data/kitti/dataset/sequences/02/', 1500)
+def _main(args):
+    input_path = os.path.expanduser(args.images_path)
+    output_path = os.path.expanduser(args.output_path)
+    calib_file = os.path.expanduser(args.calib_path)
+    json_enabled = args.enable_json
+    num_features = args.num_features
+    ransac_enabled = args.enable_ransac
+    num_cam = args.num_cameras
+    dataset = args.dataset_type.lower()
+    seq = ("%02d" % (args.seq_num))  if (dataset == 'kitti') else str(args.seq_num)
 
-# gt_rot, gt_tr = load_kitti_poses()
-pose = [0, 0, 0]
-px = []
-py = []
-pz = []
+    if not os.path.exists(output_path):
+        os.mkdir(output_path)
+    if num_features < 64:
+        print()
+        num_features = 64
+    if dataset == 'kite' and not os.path.exists(calib_file):
+        raise Exception, 'Kite data but no valid calib fie'
+    elif dataset == 'kitti':
+        calib_file = get_kitti_calib_path(input_path, seq)
+    
+    if not os.path.exists(calib_file):
+        raise ValueError, 'Unable to find  valid calib fie'
 
-# import pdb; pdb.set_trace()
-cur_R = None
-cur_t = None
-traj = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    em_pars = dict(input_path=input_path, 
+                   data_seq=seq, 
+                   calib_file=calib_file, 
+                   num_features=num_features, 
+                   dataset=dataset, 
+                   ransac=ransac_enabled, 
+                   json_output=json_enabled)
 
-for img_id in range(kv.num_imgs):
-    camera_images = kv.read_kitti_image(img_id)
-    kv.upload_images(camera_images)
-    kv.update_keypoints()
-    kv.update_sparse_flow()
-    kv.filter_nav_keypoints(debug=False)
-    abs_scale = kv.get_abs_scale(img_id)
-    global_tr = np.zeros([3, 1])
-    stereo_tr = np.zeros([3, 1])
-    kv.navcams[0].local_bundle_adjustment(True)
-    stereo_rot, stereo_tr = kv.navcams[0].get_stereo_camera_pose()
-    global_rot, global_tr = kv.global_ego_motion_solver(img_id, cam_list=[0, 1])
+    kv = EgoMotion(**em_pars)
 
-    if img_id >= 1:
-        x, y, z = global_tr[0], global_tr[1], global_tr[2]
-        x1, y1, z1 = stereo_tr[0], stereo_tr[1], stereo_tr[2]
-    else:
-        x, y, z = 0., 0., 0.
-        x1, y1, z1 = 0., 0., 0.
+    traj = np.zeros((1000, 1000, 3), dtype=np.uint8)
+
+    for img_id in range(kv.num_imgs):
+        camera_images = kv.read_one_image(img_id)
+
+        kv.upload_images(camera_images)
+        kv.update_keypoints()
+        kv.update_sparse_flow()
+        kv.filter_nav_keypoints(debug=False)
+
+        abs_scale = kv.get_abs_scale(img_id)
+        global_tr = np.zeros([3, 1])
+        stereo_tr = np.zeros([3, 1])
+        kv.navcams[0].local_bundle_adjustment(True)
+        stereo_rot, stereo_tr = kv.navcams[0].get_stereo_camera_pose()
+        global_rot, global_tr = kv.global_ego_motion_solver(img_id, cam_list=[0, 1])
+
+        if img_id >= 1:
+            x, y, z = global_tr[0], global_tr[1], global_tr[2]
+            x1, y1, z1 = stereo_tr[0], stereo_tr[1], stereo_tr[2]
+        else:
+            x, y, z = 0., 0., 0.
+            x1, y1, z1 = 0., 0., 0.
 
 
-    print('===================')
-    print('goundt', kv.trueX, kv.trueZ)
-    print('global', x, z)
-    print('stereo', x1, z1)
-    print('===================')
+        print('===================')
+        print('goundt', kv.trueX, kv.trueZ)
+        print('global', x, z)
+        print('stereo', x1, z1)
+        print('===================')
 
-    draw_ofs_x = 50
-    draw_ofs_y = 500
+        draw_ofs_x = 50
+        draw_ofs_y = 500
 
-    draw_x0, draw_y0 = int(x)+draw_ofs_x, int(z)+draw_ofs_y    
-    draw_x1, draw_y1 = int(x1)+draw_ofs_x, int(z1)+draw_ofs_y
-    true_x, true_y = int(kv.trueX)+draw_ofs_x, int(kv.trueZ)+draw_ofs_y
+        draw_x0, draw_y0 = int(x)+draw_ofs_x, int(z)+draw_ofs_y    
+        draw_x1, draw_y1 = int(x1)+draw_ofs_x, int(z1)+draw_ofs_y
+        true_x, true_y = int(kv.trueX)+draw_ofs_x, int(kv.trueZ)+draw_ofs_y
 
-    cv2.circle(traj, (draw_x0, draw_y0), 1, (255, 0,0), 1)
-    cv2.circle(traj, (draw_x1, draw_y1), 1, (0,255,0), 1)
-    cv2.circle(traj, (true_x,true_y), 1, (255,255,255), 2)
-    cv2.rectangle(traj, (10, 20), (600, 60), (0,0,0), -1)
-    text = "Img:%3d, Coordinates: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x1, y1, z1)
-    cv2.putText(traj, text, (20,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-    img1 = cv2.resize(cv2.cvtColor(camera_images[0], cv2.COLOR_GRAY2BGR), (640, 480))
-    img2 = cv2.resize(cv2.cvtColor(camera_images[1], cv2.COLOR_GRAY2BGR), (640, 480))
-    img = concat_images(img1, img2)        
-    cv2.imshow('Navigation cameras', img)
-    cv2.imshow('Trajectory' + seq, traj)
-    cv2.waitKey(1)
-traj_name = 'seq_' + seq + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '.png'
-cv2.imwrite(traj_name, traj)
+        cv2.circle(traj, (draw_x0, draw_y0), 1, (255, 0,0), 1)
+        cv2.circle(traj, (draw_x1, draw_y1), 1, (0,255,0), 1)
+        cv2.circle(traj, (true_x,true_y), 1, (255,255,255), 2)
+        cv2.rectangle(traj, (10, 20), (600, 60), (0,0,0), -1)
+        text = "Img:%3d, Coordinates: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x1, y1, z1)
+        cv2.putText(traj, text, (20,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+        img1 = cv2.resize(cv2.cvtColor(camera_images[0], cv2.COLOR_GRAY2BGR), (640, 480))
+        img2 = cv2.resize(cv2.cvtColor(camera_images[1], cv2.COLOR_GRAY2BGR), (640, 480))
+        img = concat_images(img1, img2)        
+        cv2.imshow('Navigation cameras', img)
+        cv2.imshow('Trajectory' + seq, traj)
+        cv2.waitKey(1)
+    traj_name = 'seq_' + seq + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '.png'
+    cv2.imwrite(os.path.join(output_path, traj_name), traj)
 
+    
+
+if __name__ == '__main__':
+    _main(parser.parse_args())
