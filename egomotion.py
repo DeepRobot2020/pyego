@@ -449,7 +449,6 @@ class navcam:
         stereo_R, stereo_t = self.update_camera_pose_egomotion(R, t)
         # import pdb; pdb.set_trace()
 
-
     def local_bundle_adjustment_ransac(self, init_with_mono=True):
             if self.img_idx is None or self.img_idx == 0:
                 return
@@ -776,21 +775,18 @@ class navcam:
                 flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
                 flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
 
-            # import pdb; pdb.set_trace()
+            self.flow_intra_inter0 = np.array(flow_intra_inter0, dtype=np.float)
+            self.flow_intra_inter1 = np.array(flow_intra_inter1, dtype=np.float)
+            self.flow_intra_inter3 = np.array(flow_intra_inter3, dtype=np.float)
 
+            self.flow_intra0 = np.array(flow_intra0, dtype=np.float)
+            self.flow_intra1 = np.array(flow_intra1, dtype=np.float)
 
-            self.flow_intra_inter0 = np.array(flow_intra_inter0)
-            self.flow_intra_inter1 = np.array(flow_intra_inter1)
-            self.flow_intra_inter3 = np.array(flow_intra_inter3)
+            self.flow_inter0 = np.array(flow_inter0, dtype=np.float)
+            self.flow_inter3 = np.array(flow_inter3, dtype=np.float)
 
-            self.flow_intra0 = np.array(flow_intra0)
-            self.flow_intra1 = np.array(flow_intra1)
-
-            self.flow_inter0 = np.array(flow_inter0)
-            self.flow_inter3 = np.array(flow_inter3)
-
-            self.intra0 = np.array(intra0)
-            self.intra1 = np.array(intra1)
+            self.intra0 = np.array(intra0, dtype=np.float)
+            self.intra1 = np.array(intra1, dtype=np.float)
 
             if debug:    
                 self.debug_inter_keypoints(out_dir)
@@ -798,25 +794,23 @@ class navcam:
                 print(self.img_idx, 'cam_'+ str(self.index ), 'intra_inter:' + str(len(self.flow_intra_inter0)), 'intra:' + str(len(self.flow_intra0)), 'inter:'+str(len(self.flow_inter0)))
         
     def searlize_features_for_json(self):
+        features = []
         feat013_dict = {}
         feat01_dict = {}
+        # import pdb; pdb.set_trace()
+        flow013_0 = [] if self.flow_intra_inter0 is None else self.flow_intra_inter0.ravel().tolist()
+        flow013_1 = [] if self.flow_intra_inter1 is None else self.flow_intra_inter1.ravel().tolist()
+        flow013_3 = [] if self.flow_intra_inter3 is None else self.flow_intra_inter3.ravel().tolist()
 
-        flow013_0 = self.flow_intra_inter0.tolist()
-        flow013_1 = self.flow_intra_inter1.tolist()
-        flow013_3 = self.flow_intra_inter3.tolist()
-
-        flow01_0 = self.flow_intra0.tolist()
-        flow01_1 = self.flow_intra1.tolist()
-
-        feat013_dict['feats013_0'] = [it.tolist() for it in flow013_0]
-        feat013_dict['feats013_1'] = [it.tolist() for it in flow013_1]
-        feat013_dict['feats013_3'] = [it.tolist() for it in flow013_3]
-        feat01_dict['feats01_0']  = [it.tolist() for it in flow01_0 ]
-        feat01_dict['feats01_1']  = [it.tolist() for it in flow01_1 ]
-        d = {}
-        d['feats013'] = feat013_dict
-        d['feats01'] = feat013_dict
-        return d
+        flow01_0 = [] if self.flow_intra0 is None else self.flow_intra0.ravel().tolist()
+        flow01_1 = [] if self.flow_intra1 is None else self.flow_intra1.ravel().tolist()
+        # import pdb; pdb.set_trace()
+        features.append([it for it in flow013_0])
+        features.append([it for it in flow013_1])
+        features.append([it for it in flow013_3])
+        features.append([it for it in flow01_0])
+        features.append([it for it in flow01_1])
+        return features
         
 class EgoMotion:
     """Kite vision object"""
@@ -877,23 +871,37 @@ class EgoMotion:
         for c in range(self.num_cams):
             self.navcams[c].set_stereo_pair(self.navcams[self.cam_setup[c]])
 
-    def write_to_json(self, file_name):
-        if not os.path.exists(file_name):
-            raise AssertionError(file_name + ' does not exit')
-        json_data = {}
+    def write_camera_calib_to_json(self, file_name):
+        # if not os.path.exists(file_name):
+        #     raise AssertionError(file_name + ' does not exit')
+        calib_data = {}
+        for i in range(self.num_cams):
+            cur_cam = self.navcams[i]
+            cam_data = {}
+            cam_data['camera_matrix'] = cur_cam.calib_K.ravel().tolist()
+            cam_data['camera_rotation'] = cur_cam.calib_R.ravel().tolist()
+            cam_data['camera_translation'] = cur_cam.calib_t.ravel().tolist()
+            cam_data['camera_features'] = []
+
+            calib_data['camera'+str(i)] = cam_data
+            with open(file_name, 'w') as outfile:
+                json.dump(calib_data, outfile, sort_keys=True, indent=4)
+
+    def update_features_to_json(self, outfile, img_idx):        
+        with open(outfile, 'r') as f:
+            try:
+                json_data = json.load(f)
+            except:
+                import pdb; pdb.set_trace()
+
         for i in range(self.num_cams):
             cur_cam = self.navcams[i]
             cam_data = {}
             cam_feats = cur_cam.searlize_features_for_json() 
-            cam_data['features'] = cam_feats
-            cam_data['camera_matrix'] = cur_cam.calib_K.tolist()
-            cam_data['camera_rotation'] = cur_cam.calib_R.tolist()
-            cam_data['camera_translation'] = cur_cam.calib_t.tolist()
-            json_data['camera'+str(i)] = cam_data
-        # write the json object to a file
-        with open(file_name, 'w') as outfile:
-            json.dump(json_data, outfile)
+            json_data['camera'+str(i)]['camera_features'].append(cam_feats)
 
+        with open(outfile, 'w') as f:
+            json.dump(json_data, f, sort_keys=True, indent=4)
 
     def get_abs_scale(self, frame_id):  #specialized for KITTI odometry dataset
         ss = self.annotations[frame_id-1].strip().split()
@@ -1147,7 +1155,8 @@ def _main(args):
     kv = EgoMotion(**em_pars)
 
     traj = np.zeros((1000, 1000, 3), dtype=np.uint8)
-
+    kv.write_camera_calib_to_json('/tmp/test.json')
+    import pdb; pdb.set_trace()
     for img_id in range(kv.num_imgs):
         camera_images = kv.read_one_image(img_id)
 
@@ -1162,6 +1171,7 @@ def _main(args):
         kv.navcams[0].local_bundle_adjustment(True)
         stereo_rot, stereo_tr = kv.navcams[0].get_stereo_camera_pose()
         global_rot, global_tr = kv.global_ego_motion_solver(img_id, cam_list=[0, 1])
+        kv.update_features_to_json('/tmp/test.json', img_id)
 
         if img_id >= 1:
             x, y, z = global_tr[0], global_tr[1], global_tr[2]
