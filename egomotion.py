@@ -13,12 +13,12 @@ from scipy.optimize import least_squares
 
 import time
 from datetime import datetime
-
+import argparse
 import matplotlib.pyplot as plt
+
 from utils import *
 from cfg import *
 
-import argparse
 
 parser = argparse.ArgumentParser(
     description='Compute camera relative pose on input stereo or quad images')
@@ -81,6 +81,13 @@ parser.add_argument(
     type=bool,
     help='Enable Ransac for Egomotion estimation',
     default=2)
+
+
+parser.add_argument(
+    '-json_pose',
+    '--external_json_pose',
+    help='Debug a extimated pose',
+    default=None)
 
 class KTPinholeCamera:
     def __init__(self, width, height, fx, fy, cx, cy, k1=0.0, k2=0.0, p1=0.0, p2=0.0, k3=0.0):
@@ -643,18 +650,18 @@ class navcam:
                     flow_inter0.append(np.array([x0, y0]))
                     flow_inter3.append(np.array([x3, y3]))
 
-            if len(flow_intra_inter0) > 8:
-                M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
-                M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
-                mask_flow013 = mask01 & mask03
-                flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
-                flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
-                flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
+            # if len(flow_intra_inter0) > 8:
+            #     M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
+            #     M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
+            #     mask_flow013 = mask01 & mask03
+            #     flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
+            #     flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
+            #     flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
 
-            if len(flow_intra0) > 8:
-                M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
-                flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
-                flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
+            # if len(flow_intra0) > 8:
+            #     M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
+            #     flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
+            #     flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
 
             self.flow_intra_inter0 = np.array(flow_intra_inter0, dtype=np.float)
             self.flow_intra_inter1 = np.array(flow_intra_inter1, dtype=np.float)
@@ -727,7 +734,7 @@ class EgoMotion:
         self.ego_R = cv2.Rodrigues(np.eye(3))[0]
         self.ego_t = np.zeros([3, 1])
 
-        self.pose_R = cv2.Rodrigues(np.eye(3))[0]
+        self.pose_R = np.eye(3)
         self.pose_t = np.zeros([3, 1])
         # Compute the fundamental matrix
         for left in range(self.num_cams):
@@ -803,12 +810,10 @@ class EgoMotion:
         self.ego_R = R
         self.ego_t = t
         self.prev_scale = norm(t) if norm(t) > 0.01 else self.prev_scale
-        if self.img_idx <= 1:
-            self.pose_R = R
-            self.pose_t = t
-        else:
-            self.pose_t = self.pose_t + self.pose_R.dot(t) 
-            self.pose_R = R.dot(self.pose_R)
+        if norm(t) > 10:
+            return self.pose_R, self.pose_t
+        self.pose_t = self.pose_t + self.pose_R.dot(t) 
+        self.pose_R = R.dot(self.pose_R)
         return self.pose_R, self.pose_t
 
     def get_egomotion(self):
@@ -888,6 +893,7 @@ class EgoMotion:
             mono_R3, mono_t3 = self.navcams[3].mono_ego_motion_estimation()
 
         mono_R, mono_t =  mono_R0, mono_t0
+
         if mono_R is None:
             mono_R, mono_t =  mono_R1, mono_t1
             import pdb; pdb.set_trace()
@@ -938,8 +944,6 @@ class EgoMotion:
                 json_data['cam'+str(c)]['flow013_3'] = flow3.ravel().tolist()
                 json_data['cam'+str(c)]['flow013_init'] = points013.ravel().tolist()
 
-
-
             if n_obs_j > 0:
                 flow0 = cur_cam.flow_intra0
                 flow1 = cur_cam.flow_intra1
@@ -959,7 +963,7 @@ class EgoMotion:
             cam_obs[k][1] = n_obs_j
 
         if y_meas is None or y_meas.shape[0] < 9:
-            R, t = self.update_global_camera_pose_egomotion(cv2.Rodrigues(est_R)[0], est_t.reshape(3,))
+            R, t = self.update_global_camera_pose_egomotion(cv2.Rodrigues(est_R)[0], est_t.reshape(3,1))
             return R, t
 
         x0 = x0.flatten()
@@ -983,7 +987,9 @@ class EgoMotion:
             res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), **ls_pars)
         except:
             import pdb; pdb.set_trace()
+        
         if res is None:
+            import pdb; pdb.set_trace()
             return self.ego_R, self.ego_t
 
         t1 = datetime.now()
@@ -1001,13 +1007,14 @@ class EgoMotion:
         for c in cam_list:
             n_obj_013, n_obj_01 = cam_obs[c]
             if n_obj_013 > 0:      
-                points_013 = res.x[x_offset: x_offset + 3 * n_obj_013].reshape(-1, 3)
-                json_data['cam'+str(c)]['flow013_opt'] = points013.ravel().tolist()
+                points013 = res.x[x_offset: x_offset + 3 * n_obj_013].flatten()
+                json_data['cam'+str(c)]['flow013_opt'] = points013.tolist()
                 x_offset += 3 * n_obj_013
-
+                # import pdb ; pdb.set_trace()
+                
             if n_obj_01 > 0:
-                points_01  = res.x[x_offset: x_offset+3*n_obj_01].reshape(-1, 3)
-                json_data['cam'+str(c)]['flow01_opt'] = points_01.ravel().tolist()       
+                points_01  = res.x[x_offset: x_offset + 3 *n_obj_01].flatten()
+                json_data['cam'+str(c)]['flow01_opt'] = points_01.tolist()       
                 x_offset += 3 * n_obj_01
 
         if self.least_square_conf is None:
@@ -1018,24 +1025,22 @@ class EgoMotion:
         print('gba:',self.navcams[0].img_idx, ego_elapsed.microseconds / 1000.0, 
               'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
 
-        if err_level > 5 * avg_least_square_conf:
+        if debug_json_path:
+            outfile = os.path.join(debug_json_path, 'frame'+str(img_idx)+'.json')
+            with open(outfile, 'w') as f:
+                json.dump(json_data, f, sort_keys=True, indent=4)
+
+        if err_level > 10 * avg_least_square_conf:
             return self.pose_R, self.pose_t
         else:
             self.least_square_conf += err_level
 
         avg_least_square_conf = self.least_square_conf / self.img_idx
 
-        pose_R, pose_t = self.update_global_camera_pose_egomotion(R, t)
-
-        if debug_json_path:
-            outfile = os.path.join(debug_json_path, 'frame'+str(img_idx)+'.json')
-            with open(outfile, 'w') as f:
-                json.dump(json_data, f, sort_keys=True, indent=4)
+        pose_R, pose_t = self.update_global_camera_pose_egomotion(R, t.reshape(3,1))
 
         return pose_R, pose_t 
         
-
-
 def _main(args):
     input_path = os.path.expanduser(args.images_path)
     output_path = os.path.expanduser(args.output_path)
@@ -1046,6 +1051,7 @@ def _main(args):
     num_cam = args.num_cameras
     dataset = args.dataset_type.lower()
     seq = ("%02d" % (args.seq_num))  if (dataset == 'kitti') else str(args.seq_num)
+    external_json_pose = args.external_json_pose
 
     if not os.path.exists(output_path):
         os.mkdir(output_path)
@@ -1069,54 +1075,69 @@ def _main(args):
 
     kv = EgoMotion(**em_pars)
 
-    traj = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    traj = np.zeros((1500, 1500, 3), dtype=np.uint8)
     kv.write_header_to_json('/tmp/results.json')
 
+    json_pose = None
+    n_json_pose = 0
+    if external_json_pose:
+        external_json_pose = os.path.expanduser(args.external_json_pose)
+        with open(external_json_pose) as f:
+            json_pose = json.load(f)
+            n_json_pose = json_pose['n_poses']
+
+    x, y, z = 0., 0., 0.
+    global_tr = [0, 0, 0]
     # import pdb; pdb.set_trace()
     for img_id in range(kv.num_imgs):
-        camera_images = kv.read_one_image(img_id)
-
-        kv.upload_images(camera_images)
-        kv.update_keypoints()
-        kv.update_sparse_flow()
-        kv.filter_nav_keypoints(debug=False)
-        
         if dataset == 'kitti':
-            abs_scale = kv.load_kitti_gt(img_id)
+            kv.load_kitti_gt(img_id)
+        camera_images = kv.read_one_image(img_id)
+        kv.upload_images(camera_images)
+        
+        if external_json_pose:
+            if img_id < 1:
+                global_tr = [0, 0, 0]
+                continue
+            frame_name = 'frame' + str(img_id)
 
-        global_tr = np.zeros([3, 1])
-        stereo_tr = np.zeros([3, 1])
-        kv.navcams[0].local_bundle_adjustment(True)
-        stereo_rot, stereo_tr = kv.navcams[0].get_stereo_camera_pose()
-        global_rot, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST, debug_json_path='/tmp')
+            estimated_rt = json_pose[frame_name]
 
-        if img_id >= 1:
-            x, y, z = global_tr[0], global_tr[1], global_tr[2]
-            x1, y1, z1 = stereo_tr[0], stereo_tr[1], stereo_tr[2]
-            # import pdb ; pdb.set_trace()
+            R = np.array([estimated_rt[0:3]])
+            R = cv2.Rodrigues(R)[0]
+            t = np.array([estimated_rt[3:]])
+            print(frame_name, img_id, estimated_rt)
+            _, global_tr = kv.update_global_camera_pose_egomotion(R, t.reshape(3,1))
         else:
-            x, y, z = 0., 0., 0.
-            x1, y1, z1 = 0., 0., 0.
+            kv.update_keypoints()
+            kv.update_sparse_flow()
+            kv.filter_nav_keypoints(debug=False)
+            _, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST, debug_json_path='/tmp')
 
+        # import pdb ; pdb.set_trace()
+        if img_id == 0:
+            x, y, z = 0, 0, 0
+        else:
+            x, y, z = global_tr[0], global_tr[1], global_tr[2]
 
         print('===================')
+        print('img_id', img_id)
         print('goundt', kv.trueX, kv.trueZ)
-        print('global', x, z)
-        print('stereo', x1, z1)
+        print('Estimated', x, z)
         print('===================')
 
-        draw_ofs_x = 50
-        draw_ofs_y = 500
+        # import pdb ; pdb.set_trace()
 
-        draw_x0, draw_y0 = int(x)+draw_ofs_x, int(z)+draw_ofs_y    
-        draw_x1, draw_y1 = int(x1)+draw_ofs_x, int(z1)+draw_ofs_y
-        true_x, true_y = int(kv.trueX)+draw_ofs_x, int(kv.trueZ)+draw_ofs_y
+        draw_ofs_x = 80
+        draw_ofs_y = 150
+
+        draw_x0, draw_y0 = int(x) + draw_ofs_x, int(z) + draw_ofs_y    
+        true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueZ) + draw_ofs_y
 
         cv2.circle(traj, (draw_x0, draw_y0), 1, (255, 0,0), 1)
-        cv2.circle(traj, (draw_x1, draw_y1), 1, (0,255,0), 1)
         cv2.circle(traj, (true_x,true_y), 1, (255,255,255), 2)
         cv2.rectangle(traj, (10, 20), (600, 60), (0,0,0), -1)
-        text = "Img:%3d, Coordinates: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x1, y1, z1)
+        text = "Img:%3d, Coordinates: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x, y, z)
         cv2.putText(traj, text, (20,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
         img_bgr = []

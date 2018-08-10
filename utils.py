@@ -161,7 +161,6 @@ def read_kite_image(camera_images, num_cams=None, img_idx=0):
     imgs_x4 = pil_split_rotate_navimage_4(camera_images[img_idx])
     return imgs_x4
 
-
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
     seq_path =  os.path.join(kitti_base, 'sequences')
     seq_path =  os.path.join(seq_path, data_seq)
@@ -255,9 +254,6 @@ def shi_tomasi_corner_detection(img, kpts_num=64):
                        minDistance = 8,
                        blockSize = 7 )
     return cv2.goodFeaturesToTrack(img, mask = None, **feature_params)
-
-
-
 
 
 def epi_constraint(pts1, pts2, F):
