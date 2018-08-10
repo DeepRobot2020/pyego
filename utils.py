@@ -3,7 +3,8 @@ import numpy as np
 import glob, pdb, math
 
 import os, io, libconf, copy
-import cv2, Image
+import cv2
+from PIL import Image
 
 from numpy.linalg import inv, pinv, norm
 
@@ -170,7 +171,9 @@ def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
         if not os.path.exists(images_base):
             continue
         img_files = glob.glob(images_base + '/*.png')
-        img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
+        # import pdb; pdb.set_trace()
+        # img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
+        img_files = sorted(img_files)
         camera_images.append(img_files)
     return camera_images
 
