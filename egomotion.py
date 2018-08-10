@@ -14,8 +14,8 @@ import time
 from datetime import datetime
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from utils import *
+from cfg import *
 
 import argparse
 
@@ -33,7 +33,7 @@ parser.add_argument(
     '--seq_num',
     type=int,
     help='sequence number (only fir Kitti)',
-    default=3)
+    default=2)
 
 parser.add_argument(
     '-img',
@@ -45,7 +45,7 @@ parser.add_argument(
     '-calib',
     '--calib_path',
     help='path to directory of calibriation file (Kite)',
-    default='~/vo_data/SN40/nav_calib.cfg')
+    default='~/vo_data/SN52/nav_calib.cfg')
 
 parser.add_argument(
     '-out',
@@ -81,7 +81,7 @@ parser.add_argument(
     help='Enable Ransac for Egomotion estimation',
     default=2)
 
-class PinholeCamera:
+class KTPinholeCamera:
     	def __init__(self, width, height, fx, fy, cx, cy, 
 				k1=0.0, k2=0.0, p1=0.0, p2=0.0, k3=0.0):
 		self.width = width
@@ -93,7 +93,7 @@ class PinholeCamera:
 		self.distortion = (abs(k1) > 0.0000001)
 		self.d = [k1, k2, p1, p2, k3]
 
-kt_cam = PinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
+kt_cam = KTPinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
 
 
 class navcam:
@@ -103,11 +103,13 @@ class navcam:
         self.calib_R    = extrinsic_rot
         self.calib_R2   = cv2.Rodrigues(extrinsic_rot)[0]
         self.calib_t    = extrinsic_trans
-        self.focal      = (intrinsic_mtx[0,0], intrinsic_mtx[1,1])
-        self.pp         = (intrinsic_mtx[:2,2][0], intrinsic_mtx[:2,2][0]) 
 
-        self.focal      = kt_cam.fx
-        self.pp         = (kt_cam.cx, kt_cam.cy) 
+        if DATASET == 'kite':  # focal lenght and princial point of kite navcam
+            self.focal      = (intrinsic_mtx[0,0] + intrinsic_mtx[1,1]) / 2.0
+            self.pp         = (intrinsic_mtx[:2,2][0], intrinsic_mtx[:2,2][0])    
+        else: # focal lenght and princial point of kitti stereo cameras
+            self.focal      = kt_cam.fx
+            self.pp         = (kt_cam.cx, kt_cam.cy) 
 
         self.num_features = num_features
         self.flow_kpt0 = None
@@ -124,7 +126,7 @@ class navcam:
         self.mono_cur_t = None
         self.ego_R = None
         self.ego_t = None
-        self.prev_scale = None
+        self.prev_scale = 1.0
         # keypoints which have both intra and inter matching
         self.flow_intra_inter0 = None  # original keypoints
         self.flow_intra_inter1 = None  # intra match
@@ -148,8 +150,9 @@ class navcam:
         self.F = F
         self.proj_mtx = None
         self.least_square_conf = None
+        
 
-    def mono_vo(self, abs_scale):
+    def mono_vo(self, abs_scale = 1.0):
         if self.img_idx is None or self.img_idx == 0:
             return None, None
         if self.intra0 is None:
@@ -161,160 +164,25 @@ class navcam:
         except:
             import pdb; pdb.set_trace()
         try:
-            _, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, focal=self.focal , pp = self.pp)
+            _, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, focal=self.focal, pp = self.pp)
         except:
-            import pdb; pdb.set_trace()
-
-        rot = cv2.Rodrigues(R)[0]
-        tr = t
+            # import pdb; pdb.set_trace()
+            return None, None
 
         if self.img_idx == 1:
-            self.mono_cur_t = t
             self.mono_cur_R = R
-        else:
-            if(abs_scale > 0.1):
-                # import pdb; pdb.set_trace()
-                self.mono_cur_t = self.mono_cur_t + abs_scale*self.mono_cur_R.dot(t) 
-                self.mono_cur_R = R.dot(self.mono_cur_R)
-        return rot, tr
+            self.mono_cur_t = t
+            return R, t
+
+        if abs_scale > 0.1 and abs_scale != 1.0:
+            self.mono_cur_t = self.mono_cur_t + abs_scale * self.mono_cur_R.dot(t) 
+            self.mono_cur_R = R.dot(self.mono_cur_R)
+        return R, t
 
     def set_stereo_pair(self, right_cam):
         '''Set the stereo pair of current camera  '''
         self.stereo_pair_cam = right_cam
 
-    def project_to_flow0(self, cam_points):
-        if cam_points is None:
-                return None
-        image_points_flow0 = np.dot(self.calib_K, cam_points.T).T
-        # convert the projected points to the P2 homogenous coordinates
-        image_points_flow0 = image_points_flow0[:, :2] / image_points_flow0[:, 2, np.newaxis]
-        return image_points_flow0
-
-    def project_to_flow1(self, cam_points, ego_rot_vecs, ego_trans):
-        if cam_points is None:
-                return None
-        ego_trans = ego_trans.reshape(1, -1)
-        ego_rot_vecs = ego_rot_vecs.reshape(1, -1)
-        points_proj_flow1 = rotate(cam_points, ego_rot_vecs) + ego_trans
-        image_points_flow1 = np.dot(self.calib_K, points_proj_flow1.T).T
-        # convert the projected points to the P2 homogenous coordinates
-        image_points_flow1 = image_points_flow1[:, :2] / image_points_flow1[:, 2, np.newaxis]
-        return image_points_flow1
-
-    def project_to_flow3(self, cam_points, cam_rot_vecs, cam_trans):
-        cam_rot_vecs = cam_rot_vecs.reshape(1,-1)
-        cam_trans = cam_trans.reshape(1, -1)
-
-        points_proj_flow3 = rotate(cam_points, cam_rot_vecs) + cam_trans
-        image_points_flow3 = np.dot(self.stereo_pair_cam.calib_K, points_proj_flow3.T).T
-        # convert the projected points to the P2 homogenous coordinates
-        image_points_flow3 = image_points_flow3[:, :2] / image_points_flow3[:, 2, np.newaxis]
-        return image_points_flow3
-
-    def init_flow013_camera_points(self, est_depth=1.0):
-        if len(self.flow_intra_inter0) == 0:
-            return None, 1.0
-        # est_depth = 
-        flow0 = cv2.convertPointsToHomogeneous(self.flow_intra_inter0.astype(np.float32))
-        flow0 = flow0.reshape(flow0.shape[0], flow0.shape[2]).T
-        inv_K = inv(self.calib_K)
-        camera_points = np.dot(inv_K, flow0).T * est_depth
-        return camera_points
-
-    def construct_projection_mtx(self, K1, K2, R, t):
-        left_T = np.eye(4)[:3]
-        left_mtx = np.dot(K1, left_T)
-        right_T = np.zeros([3,4])
-        right_T[0:3,0:3] = R
-        right_T[:,3][:3] = t.ravel()
-        right_mtx = np.dot(K2, right_T)
-        return left_mtx, right_mtx
-
-    def test_fake_points(self, gt_rot, gt_trans, npoints_013=10, npoints_01=30):
-        
-        true_points_013 = np.hstack([np.random.random(
-            (npoints_013, 1)) * 3 - 1.5, np.random.random((npoints_013, 1)) - 0.5, np.random.random((npoints_013, 1)) + np.arange(npoints_013).reshape(-1, 1)])
-        true_points_01 = np.hstack([np.random.random(
-            (npoints_01, 1)) * 3 - 1.5, np.random.random((npoints_01, 1)) - 0.5, np.random.random((npoints_01, 1)) + 3])
-
-        # project points to current camera
-        points_013_0 = self.project_to_flow0(true_points_013)
-        # project points to t-1
-        points_013_1 = self.project_to_flow1(true_points_013, gt_rot, gt_trans) 
-        # project points to stereo pair
-        points_013_3 = self.project_to_flow3(true_points_013, self.calib_R2, self.calib_t) 
-
-        # project points to current camera
-        points_01_0 = self.project_to_flow0(true_points_01)
-        # project points to t-1
-        points_01_1 = self.project_to_flow1(true_points_01, gt_rot, gt_trans)
-
-        self.flow_intra_inter0 = points_013_0 + np.random.randn(npoints_013, 2)
-        self.flow_intra_inter1 = points_013_1 + np.random.randn(npoints_013, 2)
-        self.flow_intra_inter3 = points_013_3 + np.random.randn(npoints_013, 2)
-
-        self.flow_intra0 = points_01_0 + np.random.randn(npoints_01, 2)
-        self.flow_intra1 = points_01_1 + np.random.randn(npoints_01, 2)
-        
-        return true_points_013, true_points_01
-
-    def init_flow01_camera_points(self, est_depth=1.0):
-        if self.flow_intra0 is None:
-            return None
-        if len(self.flow_intra0) == 0:
-            return None
-        flow0 = cv2.convertPointsToHomogeneous(self.flow_intra0.astype(np.float32))
-        flow0 = flow0.reshape(flow0.shape[0], flow0.shape[2]).T
-        inv_K = inv(self.calib_K)
-        camera_points = est_depth * np.dot(inv_K, flow0).T
-        return camera_points
-
-    def triangulate_3d_points_intra(self, kpts1, kpts2, est_R, est_t):
-        left_p, right_p = self.construct_projection_mtx(self.calib_K, self.calib_K, est_R, est_t)
-        if kpts1 is None:
-            return None
-        if len(kpts1) < 1 or len(kpts2) < 1:
-            return None
-        try:
-            scene_pts = cv2.triangulatePoints(left_p, right_p, kpts1.T, kpts2.T).T
-        except:
-            print('cv2.triangulatePoints() failed')
-            return None
-        # import pdb; pdb.set_trace()
-        left_proj = np.dot(left_p, scene_pts.T).T
-        left_proj = left_proj[:,0:2] / left_proj[:,2][:,np.newaxis]
-        err_left = left_proj - kpts1
-
-        right_proj = np.dot(right_p, scene_pts.T).T
-        right_proj = right_proj[:,0:2] / right_proj[:,2][:,np.newaxis]
-        err_right  = right_proj - kpts2
-        points_cam_cur = scene_pts[:,0:3] / scene_pts[:,3][:,np.newaxis]
-        return points_cam_cur, err_left, err_right
-
-
-    def triangulate_3d_points(self, left_kpts, right_kpts):
-        left_p, right_p = self.construct_projection_mtx(self.calib_K, self.stereo_pair_cam.calib_K, self.calib_R, self.calib_t)
-        # left_kpts = self.flow_intra_inter0
-        # right_kpts = self.flow_intra_inter3
-        if right_kpts is None:
-            return None
-        if len(left_kpts) < 1 or len(right_kpts) < 1:
-            return None
-        try:
-            scene_pts = cv2.triangulatePoints(left_p, right_p, left_kpts.T, right_kpts.T).T
-        except:
-            print('cv2.triangulatePoints() failed')
-            return None
-        # import pdb; pdb.set_trace()
-        left_proj = np.dot(left_p, scene_pts.T).T
-        left_proj = left_proj[:,0:2] / left_proj[:,2][:,np.newaxis]
-        err_left = left_proj - left_kpts
-
-        right_proj = np.dot(right_p, scene_pts.T).T
-        right_proj = right_proj[:,0:2] / right_proj[:,2][:,np.newaxis]
-        err_right  = right_proj - right_kpts
-        points_cam_cur = scene_pts[:,0:3] / scene_pts[:,3][:,np.newaxis]
-        return points_cam_cur, err_left, err_right
 
     def fun(self, x0, cam_obs, y_meas):
         n_kpts_013, n_kpts_01 = cam_obs
@@ -322,13 +190,14 @@ class navcam:
         rot_vecs   = x0[0:3]
         trans_vecs = x0[3:6]
         points_013 = x0[6: 6 + 3 * n_kpts_013].reshape(-1, 3)
-        flow013_0  = y_meas[0             : 1 * n_kpts_013]
+        flow013_0  = y_meas[0: 1 * n_kpts_013]
         flow013_1  = y_meas[1 * n_kpts_013 : 2 * n_kpts_013]
         flow013_3  = y_meas[2 * n_kpts_013 : 3 * n_kpts_013]
-        flow0_err = self.project_to_flow0(points_013) - flow013_0
-        flow1_err = self.project_to_flow1(points_013, rot_vecs, trans_vecs) - flow013_1
-        flow3_err = self.project_to_flow3(points_013, self.calib_R2, self.calib_t) - flow013_3
 
+        flow0_err = reprojection_error(points_013, flow013_0, self.calib_K)
+        flow1_err = reprojection_error(points_013, flow013_1, self.calib_K, rot_vecs, trans_vecs)
+        flow3_err = reprojection_error(points_013, flow013_3, self.stereo_pair_cam.calib_K, self.calib_R2, self.calib_t)
+    
         errs = flow1_err
         errs013_03 = np.vstack((flow0_err, flow3_err))
         
@@ -340,10 +209,11 @@ class navcam:
             flow01_0  = y_meas[3 * n_kpts_013  : 3 * n_kpts_013 + n_kpts_01]
             flow01_1  = y_meas[3 * n_kpts_013 + n_kpts_01: 3 * n_kpts_013 + 2*n_kpts_01]
 
-            flow01_err0 = self.project_to_flow0(points_01) - flow01_0
-            flow01_err1 = self.project_to_flow1(points_01, rot_vecs, trans_vecs) - flow01_1
-            errs = np.vstack((errs, flow01_err1))   
-            errs013_03 = np.vstack((errs013_03, flow01_err0))
+            flow0_err = reprojection_error(points_01, flow01_0, self.calib_K)
+            flow1_err = reprojection_error(points_01, flow01_1, self.calib_K, rot_vecs, trans_vecs)
+
+            errs = np.vstack((errs, flow1_err))   
+            errs013_03 = np.vstack((errs013_03, flow0_err))
 
         errs = np.vstack((errs, errs013_03))
         return errs.ravel()
@@ -354,12 +224,14 @@ class navcam:
         rot_vecs   = x0[0:3]
         trans_vecs = x0[3:6]
         points_013 = x0[6: 6 + 3 * n_kpts_013].reshape(-1, 3)
-        flow013_0  = y_meas[0             : 1 * n_kpts_013]
-        flow013_1  = y_meas[1 * n_kpts_013 : 2 * n_kpts_013]
+        flow013_0  = y_meas[0 : n_kpts_013]
+        flow013_1  = y_meas[n_kpts_013 : 2 * n_kpts_013]
         flow013_3  = y_meas[2 * n_kpts_013 : 3 * n_kpts_013]
-        flow0_err = self.project_to_flow0(points_013) - flow013_0
-        flow1_err = self.project_to_flow1(points_013, rot_vecs, trans_vecs) - flow013_1
-        flow3_err = self.project_to_flow3(points_013, self.calib_R2, self.calib_t) - flow013_3
+
+        flow0_err = reprojection_error(points_013, flow013_0, self.calib_K)
+        flow1_err = reprojection_error(points_013, flow013_1, self.calib_K, rot_vecs, trans_vecs)
+        flow3_err = reprojection_error(points_013, flow013_3, self.stereo_pair_cam.calib_K, self.calib_R2, self.calib_t)
+    
         reprojection_errs.append(flow0_err)
         reprojection_errs.append(flow1_err)
         reprojection_errs.append(flow3_err)
@@ -368,24 +240,25 @@ class navcam:
             points_01  = x0[6 + 3 * n_kpts_013 : 6 + 3 * n_kpts_013 + 3 * n_kpts_01].reshape(-1, 3)
             flow01_0  = y_meas[3 * n_kpts_013  : 3 * n_kpts_013 + n_kpts_01]
             flow01_1  = y_meas[3 * n_kpts_013 + n_kpts_01: 3 * n_kpts_013 + 2*n_kpts_01]
-
-            flow01_err0 = self.project_to_flow0(points_01) - flow01_0
-            flow01_err1 = self.project_to_flow1(points_01, rot_vecs, trans_vecs) - flow01_1
-            reprojection_errs.append(flow01_err0)
-            reprojection_errs.append(flow01_err1)
+            flow0_err = reprojection_error(points_01, flow01_0, self.calib_K)
+            flow1_err = reprojection_error(points_01, flow01_1, self.calib_K, rot_vecs, trans_vecs)
+            reprojection_errs.append(flow0_err)
+            reprojection_errs.append(flow1_err)
         return reprojection_errs
 
     def mono_ego_motion_estimation(self, abs_scale=None):
-        mono_rot, mono_tr = self.mono_vo(1.0)
-        if mono_rot is None:
+        mono_rotation_matrix, mono_translation_vector = self.mono_vo(1.0)
+        if mono_rotation_matrix is None:
             return None, None
         if abs_scale:
-            mono_tr = abs_scale * mono_tr
-        return mono_rot, mono_tr
+            mono_translation_vector = abs_scale * mono_translation_vector
+        mono_rotation_vector = cv2.Rodrigues(mono_rotation_matrix)[0]
+        return mono_rotation_vector, mono_translation_vector
 
     def update_camera_pose_egomotion(self, R, t):
         self.ego_R = R
         self.ego_t = t
+        # 
         self.prev_scale = norm(t) if norm(t) > 0.01 else self.prev_scale
         if self.img_idx == 1:
             self.stereo_R = R
@@ -424,8 +297,7 @@ class navcam:
 
         if kpts01 is None or len(kpts01[0]) < 2:    
             kpts01 = (self.flow_intra0, self.flow_intra1)
-        # import pdb; pdb.set_trace()
-        # plt.plot(err0); plt.plot(err1); plt.show();
+
         res = self.local_ego_motion_solver(init_est, kpts013, kpts01)
         
         if res[0] is None:
@@ -447,82 +319,81 @@ class navcam:
         R = cv2.Rodrigues(ba_R)[0]
         t = ba_t
         stereo_R, stereo_t = self.update_camera_pose_egomotion(R, t)
-        # import pdb; pdb.set_trace()
 
     def local_bundle_adjustment_ransac(self, init_with_mono=True):
-            if self.img_idx is None or self.img_idx == 0:
-                return
-            proj_err_threshold = 1.0
-            min_ransac_013 = 2
-            min_ransac_01 = 2
-            target_013_inliers_pct = 0.8
-            target_01_inliers_pct = 0.8
-            max_ransac_inters = 5
-            min_ransac_inters = 2
+        if self.img_idx is None or self.img_idx == 0:
+            return
+        proj_err_threshold = 1.0
+        min_ransac_013 = 2
+        min_ransac_01 = 2
+        target_013_inliers_pct = 0.8
+        target_01_inliers_pct = 0.8
+        max_ransac_inters = 5
+        min_ransac_inters = 2
 
-            target_013_inliers_num = int(self.flow_intra_inter0.shape[0] * target_013_inliers_pct)
-            target_01_inliers_num = int(self.flow_intra0.shape[0] * target_01_inliers_pct)
+        target_013_inliers_num = int(self.flow_intra_inter0.shape[0] * target_013_inliers_pct)
+        target_01_inliers_num = int(self.flow_intra0.shape[0] * target_01_inliers_pct)
 
-            inliers_013 =  [[] for i in range(3)]
-            inliers_01 = [[] for i in range(2)]
-        
-            kpts013 = (self.flow_intra_inter0, self.flow_intra_inter1, self.flow_intra_inter3)
-            kpts01 = (self.flow_intra0, self.flow_intra1)        
-            init_est = self.generate_initial_guess(init_with_mono)
+        inliers_013 =  [[] for i in range(3)]
+        inliers_01 = [[] for i in range(2)]
+    
+        kpts013 = (self.flow_intra_inter0, self.flow_intra_inter1, self.flow_intra_inter3)
+        kpts01 = (self.flow_intra0, self.flow_intra1)        
+        init_est = self.generate_initial_guess(init_with_mono)
 
-            R, t = init_est
-            for it in range(max_ransac_inters):
-                kpts013_maybe_inliers = []
-                if self.flow_intra_inter0 is not None and self.flow_intra_inter0.shape[0] > min_ransac_013:
-                    flow013_ransac_idx = np.random.choice(range(self.flow_intra_inter0.shape[0]), min_ransac_013, replace=False)
-                    kpts013_maybe_inliers.append(np.take(kpts013[0], flow013_ransac_idx, axis=0))
-                    kpts013_maybe_inliers.append(np.take(kpts013[1], flow013_ransac_idx, axis=0))
-                    kpts013_maybe_inliers.append(np.take(kpts013[2], flow013_ransac_idx, axis=0))
+        R, t = init_est
+        for it in range(max_ransac_inters):
+            kpts013_maybe_inliers = []
+            if self.flow_intra_inter0 is not None and self.flow_intra_inter0.shape[0] > min_ransac_013:
+                flow013_ransac_idx = np.random.choice(range(self.flow_intra_inter0.shape[0]), min_ransac_013, replace=False)
+                kpts013_maybe_inliers.append(np.take(kpts013[0], flow013_ransac_idx, axis=0))
+                kpts013_maybe_inliers.append(np.take(kpts013[1], flow013_ransac_idx, axis=0))
+                kpts013_maybe_inliers.append(np.take(kpts013[2], flow013_ransac_idx, axis=0))
 
 
-                kpts01_maybe_inliers = []
-                if self.flow_intra0 is not None and self.flow_intra0.shape[0] > min_ransac_01:
-                    flow01_ransac_idx = np.random.choice(range(self.flow_intra0.shape[0]), min_ransac_01, replace=False)
-                    kpts01_maybe_inliers.append(np.take(kpts01[0], flow01_ransac_idx, axis=0))
-                    kpts01_maybe_inliers.append(np.take(kpts01[1], flow01_ransac_idx, axis=0))
-                # import pdb; pdb.set_trace()
-                rt, proj_err0 = self.local_ego_motion_solver(init_est, kpts013_maybe_inliers, kpts01_maybe_inliers)
-                if rt is None:
-                    continue
-                R, t = rt[0:3], rt[3:6] 
+            kpts01_maybe_inliers = []
+            if self.flow_intra0 is not None and self.flow_intra0.shape[0] > min_ransac_01:
+                flow01_ransac_idx = np.random.choice(range(self.flow_intra0.shape[0]), min_ransac_01, replace=False)
+                kpts01_maybe_inliers.append(np.take(kpts01[0], flow01_ransac_idx, axis=0))
+                kpts01_maybe_inliers.append(np.take(kpts01[1], flow01_ransac_idx, axis=0))
+            # import pdb; pdb.set_trace()
+            rt, proj_err0 = self.local_ego_motion_solver(init_est, kpts013_maybe_inliers, kpts01_maybe_inliers)
+            if rt is None:
+                continue
+            R, t = rt[0:3], rt[3:6] 
 
-                proj_err1 = self.local_ego_motion_solver((R, t), kpts013, kpts01, ba_enabled=False)[1]
-                mb_in_013 = []
-                mb_in_01 = []  
-                for k in range(self.flow_intra_inter0.shape[0]):
-                    err013 = abs(proj_err1[0][k]) + abs(proj_err1[1][k]) + abs(proj_err1[2][k])
-                    err013 = norm(err013) / 3.0
-                    if err013 < proj_err_threshold:
-                        mb_in_013.append(k)
-                for k in range(self.flow_intra0.shape[0]):
-                    err01 = abs(proj_err1[3][k]) + abs(proj_err1[4][k])
-                    err01 = norm(err01) / 2.0
-                    if err01 < proj_err_threshold:
-                        mb_in_01.append(k)
+            proj_err1 = self.local_ego_motion_solver((R, t), kpts013, kpts01, ba_enabled=False)[1]
+            mb_in_013 = []
+            mb_in_01 = []  
+            for k in range(self.flow_intra_inter0.shape[0]):
+                err013 = abs(proj_err1[0][k]) + abs(proj_err1[1][k]) + abs(proj_err1[2][k])
+                err013 = norm(err013) / 3.0
+                if err013 < proj_err_threshold:
+                    mb_in_013.append(k)
+            for k in range(self.flow_intra0.shape[0]):
+                err01 = abs(proj_err1[3][k]) + abs(proj_err1[4][k])
+                err01 = norm(err01) / 2.0
+                if err01 < proj_err_threshold:
+                    mb_in_01.append(k)
 
-                in_013 = []
-                in_01 = []
-                # import pdb; pdb.set_trace()
-                if len(mb_in_013) > len(inliers_013[0]) and len(mb_in_01) > len(inliers_01[0]):
-                    in_013.append(np.take(kpts013[0], mb_in_013, axis=0))
-                    in_013.append(np.take(kpts013[1], mb_in_013, axis=0))
-                    in_013.append(np.take(kpts013[2], mb_in_013, axis=0))
-                    in_01.append(np.take(kpts01[0],  mb_in_01,  axis=0))
-                    in_01.append(np.take(kpts01[1],  mb_in_01,  axis=0))
-                    inliers_013 = in_013
-                    inliers_01 = in_01
+            in_013 = []
+            in_01 = []
+            # import pdb; pdb.set_trace()
+            if len(mb_in_013) > len(inliers_013[0]) and len(mb_in_01) > len(inliers_01[0]):
+                in_013.append(np.take(kpts013[0], mb_in_013, axis=0))
+                in_013.append(np.take(kpts013[1], mb_in_013, axis=0))
+                in_013.append(np.take(kpts013[2], mb_in_013, axis=0))
+                in_01.append(np.take(kpts01[0],  mb_in_01,  axis=0))
+                in_01.append(np.take(kpts01[1],  mb_in_01,  axis=0))
+                inliers_013 = in_013
+                inliers_01 = in_01
 
-                # import pdb; pdb.set_trace()
-                if len(mb_in_013) > target_013_inliers_num and it > min_ransac_inters:
-                    self.inliers_013 = inliers_013
-                    self.inliers_01 = inliers_01
-                    self.local_bundle_adjustment(True, inliers_013, inliers_01)
-                    return 
+            # import pdb; pdb.set_trace()
+            if len(mb_in_013) > target_013_inliers_num and it > min_ransac_inters:
+                self.inliers_013 = inliers_013
+                self.inliers_01 = inliers_01
+                self.local_bundle_adjustment(True, inliers_013, inliers_01)
+                return 
 
     def local_ego_motion_solver(self, init_est = (None, None), kpts013=None, kpts01=None, ba_enabled=True):
         est_R, est_t = init_est
@@ -546,20 +417,25 @@ class navcam:
         x0 = np.vstack([est_R.reshape(3,1), est_t.reshape(3,1)])
 
         if n_kpts_013 > 0:
-            points013, terr013_0, terr013_1 = self.triangulate_3d_points(flow_intra_inter0, flow_intra_inter3)
+            points013, terr013_0, terr013_1 = triangulate_3d_points(flow_intra_inter0, flow_intra_inter3, 
+                                           self.calib_K, self.stereo_pair_cam.calib_K, 
+                                           self.calib_R, self.calib_t)
+
             points013_flatten = points013.ravel().reshape(-1, 1)
             y_meas = np.vstack([flow_intra_inter0, flow_intra_inter1, flow_intra_inter3])
             x0 = np.vstack([x0, points013_flatten])
             if n_kpts_01 > 0:
-                points01, terr01_0, terr01_1 = self.triangulate_3d_points_intra(flow_intra0, flow_intra1, cv2.Rodrigues(est_R)[0], est_t)
+                points01, terr01_0, terr01_1 = triangulate_3d_points(flow_intra0, flow_intra1, 
+                                               self.calib_K, self.calib_K,
+                                               cv2.Rodrigues(est_R)[0], est_t)
+
                 points01_flatten = points01.ravel().reshape(-1, 1)
                 x0 = np.vstack([x0, points01_flatten])
                 y_meas = np.vstack([y_meas, flow_intra0, flow_intra1])
         else:
             print('WARNING: ######cam_'+ str(self.index) + ' dont have inter match. Using mono results')
-            # import pdb; pdb.set_trace()
-            # import pdb; pdb.set_trace()
             return (None, [-1.0, -1.0, -1.0])
+        # import pdb; pdb.set_trace()
 
         # sparse_A = local_bundle_adjustment_sparsity(cam_obs[self.index], 1)
         sparse_A = global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=2)   
@@ -586,10 +462,8 @@ class navcam:
             err_proj = self.reprojection_err(x1, cam_obs[self.index], y_meas)
             return (x1[0:6], err_proj)
 
-
-        err_proj = self.fun(x1, cam_obs[self.index], y_meas)
         # import pdb; pdb.set_trace()
-        # err_vars = [np.var(err_proj), np.var(err_proj[0: 6*n_kpts_013]), np.var(err_proj[6*n_kpts_013:])]
+        err_proj = self.fun(x1, cam_obs[self.index], y_meas)
         return (x1[0:6], err_proj)
 
 
@@ -670,7 +544,7 @@ class navcam:
                     self.flow_kpt3[ct][0][0] = -20.0
                     self.flow_kpt3[ct][0][1] = -20.0
                     continue  
-                if err > 0.01:
+                if err > 0.05:
                     self.flow_kpt3[ct][0][0] = -30.0
                     self.flow_kpt3[ct][0][1] = -30.0
                     continue
@@ -681,10 +555,10 @@ class navcam:
         if self.prev_img is not None:
             img1 = cv2.cvtColor(self.curr_img, cv2.COLOR_GRAY2BGR)
             img2 = cv2.cvtColor(self.curr_stereo_img, cv2.COLOR_GRAY2BGR)
-
+            # import pdb; pdb.set_trace()
             for pt1, pt3 in zip(self.flow_intra_inter0, self.flow_intra_inter3):
-                x1, y1 = (pt1[0], pt1[1])
-                x3, y3 = (pt3[0], pt3[1])
+                x1, y1 = (int(pt1[0]), int(pt1[1]))
+                x3, y3 = (int(pt3[0]), int(pt3[1]))
                 color = tuple(np.random.randint(0,255,3).tolist())
                 cv2.circle(img1,(x1, y1), 6, color,2)
                 cv2.circle(img2,(x3, y3), 6, color,2)
@@ -699,15 +573,15 @@ class navcam:
             img1 = cv2.cvtColor(self.curr_img, cv2.COLOR_GRAY2BGR)
             img2 = cv2.cvtColor(self.prev_img, cv2.COLOR_GRAY2BGR)
             for pt1, pt2 in zip(self.flow_intra_inter0, self.flow_intra_inter1):
-                x1, y1 = (pt1[0], pt1[1])
-                x3, y3 = (pt2[0], pt2[1])
+                x1, y1 = (int(pt1[0]), int(pt1[1]))
+                x3, y3 = (int(pt2[0]), int(pt2[1]))
                 color = tuple(np.random.randint(0,255,3).tolist())
                 cv2.circle(img1,(x1, y1), 6, color,2)
                 cv2.circle(img2,(x3, y3), 6, color,2)
 
             for pt1, pt2 in zip(self.flow_intra0, self.flow_intra1):
-                x1, y1 = (pt1[0], pt1[1])
-                x3, y3 = (pt2[0], pt2[1])
+                x1, y1 = (int(pt1[0]), int(pt1[1]))
+                x3, y3 = (int(pt2[0]), int(pt2[1]))
                 color = tuple(np.random.randint(0,255,3).tolist())
                 cv2.circle(img1,(x1, y1), 6, color,2)
                 cv2.circle(img2,(x3, y3), 6, color,2)
@@ -719,10 +593,11 @@ class navcam:
 
 
     def filter_keypoints(self, debug=False, out_dir='/home/jzhang/Pictures/tmp/', max_inter_pts = 100):
-        if self.prev_img is not None:            
+        if self.prev_img is not None:
+
             self.filter_intra_keypoints(debug=debug, out_dir=out_dir)
             self.filter_inter_keypoints(debug=debug, out_dir=out_dir)
-
+            
             flow_intra_inter0 = []
             flow_intra_inter1 = []
             flow_intra_inter3 = []
@@ -732,15 +607,21 @@ class navcam:
 
             flow_inter0 = []
             flow_inter3 = []
-            # import pdb; pdb.set_trace()
             intra0 = []
             intra1 = []
 
-            points013, terr0, terr1 = self.triangulate_3d_points(np.array(self.flow_kpt0).reshape(-1,2), np.array(self.flow_kpt3).reshape(-1,2))
-            # import pdb; pdb.set_trace()
+            points013, terr0, terr1 = triangulate_3d_points(np.array(self.flow_kpt0).reshape(-1,2), 
+                                                            np.array(self.flow_kpt3).reshape(-1,2), 
+                                                            self.calib_K, self.stereo_pair_cam.calib_K, 
+                                                            self.calib_R, self.calib_t)
+
+    
             num_flow_013 = 0
             for kp0, kp1, kp3, wp in zip(self.flow_kpt0, self.flow_kpt1, self.flow_kpt3, points013):
-                if wp[2] < 0:
+                # for kite system, the cam0 is a logical leftcam not a physicall left cam, so
+                # the feature points could behind the camera 
+                if wp[2] < 0 and DATASET == 'kitti':
+                    # print('warning: ignore world points behind camera')
                     continue
                 x0, y0 = kp0[0][0], kp0[0][1]
                 x1, y1 = kp1[0][0], kp1[0][1]
@@ -814,10 +695,10 @@ class navcam:
         
 class EgoMotion:
     """Kite vision object"""
-    def __init__(self, calib_file=None, num_cams=4, num_features=64, dataset='kitti', input_path=None, data_seq=None, json_output=True, ransac=False):
+    def __init__(self, calib_file=None, num_cams=4, num_features=64, dataset=DATASET, input_path=None, data_seq=None, json_output=True, ransac=False):
         self.num_features = num_features
         self.navcams      = []
-        self.cam_setup    = [1, 0, 3, 2]
+        self.STEREOCONFG    = [1, 0, 3, 2]
         self.num_imgs = 0
         self.focal = None
 
@@ -833,8 +714,6 @@ class EgoMotion:
         self.dataset_seq = data_seq
         self.annotations = get_kitti_ground_truth(input_path, data_seq)
 
-        mtx, dist, rot, trans = load_camera_calib(dataset, calib_file, num_cams)
-
         if self.dataset.lower() == 'kitti':
             self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
             self.num_imgs  = len(self.camera_images[0])
@@ -846,6 +725,12 @@ class EgoMotion:
         else:
             raise ValueError('Unsupported dataset')
 
+        mtx, dist, rot, trans = load_camera_calib(dataset, calib_file, num_cams)
+        # From nav_calib.cfg
+        # Camera trans/rot prev camera to camera. Camera 0 is the first in the chain.
+        # IMU trans/rot is imu to camera.
+        # Convert the chained calibration cam0 -> cam1 -> cam2 -> cam3
+        # to two stereo pair calibration: cam0 -> cam1, cam2 -> cam3
         rot_01, trans_01 = rot[1], trans[1]
         rot_10, trans_10 = invert_RT(rot[1], trans[1])
 
@@ -862,16 +747,16 @@ class EgoMotion:
 
         self.pose_R = cv2.Rodrigues(np.eye(3))[0]
         self.pose_t = np.zeros([3, 1])
+        # Compute the fundamental matrix
+        for left in range(self.num_cams):
+            right = self.STEREOCONFG[left]
+            F_mtx = fundamental_matrix(rot[left], trans[left], mtx[left], mtx[right])
+            self.navcams.append(navcam(left, self.STEREOCONFG[left], F_mtx, mtx[left], dist[left], rot[left], trans[left], self.num_features))
+        # Set each camera's stereo config
+        for left in range(self.num_cams):
+            self.navcams[left].set_stereo_pair(self.navcams[self.STEREOCONFG[left]])
 
-        for c in range(self.num_cams):
-            left = c
-            right = self.cam_setup[left]
-            F_mtx = fundmental_matrix(rot[right], trans[right], mtx[left], mtx[right])
-            self.navcams.append(navcam(c, self.cam_setup[c], F_mtx, mtx[c], dist[c], rot[c], trans[c], self.num_features))
-        for c in range(self.num_cams):
-            self.navcams[c].set_stereo_pair(self.navcams[self.cam_setup[c]])
-
-    def write_camera_calib_to_json(self, file_name):
+    def write_header_to_json(self, file_name):
         # if not os.path.exists(file_name):
         #     raise AssertionError(file_name + ' does not exit')
         calib_data = {}
@@ -903,7 +788,7 @@ class EgoMotion:
         with open(outfile, 'w') as f:
             json.dump(json_data, f, sort_keys=True, indent=4)
 
-    def get_abs_scale(self, frame_id):  #specialized for KITTI odometry dataset
+    def load_kitti_gt(self, frame_id):  #specialized for KITTI odometry dataset
         ss = self.annotations[frame_id-1].strip().split()
         x_prev = float(ss[3])
         y_prev = float(ss[7])
@@ -977,15 +862,22 @@ class EgoMotion:
         cost_err = None
         for c in cam_list:
             n_obj_013, n_obj_01 = cam_obs[c]
+            cur_cam = self.navcams[c]
+            camera_matrix = cur_cam.calib_K
+            stereo_matrix = cur_cam.stereo_pair_cam.calib_K
+            stereo_rotation = cur_cam.calib_R2
+            stereo_translation = cur_cam.calib_t
+
             if n_obj_013 > 0:      
                 points_013 = x0[x0_offset: x0_offset + 3 * n_obj_013].reshape(-1, 3)
                 flow013_0  = y_meas[y_offset: y_offset+n_obj_013]
                 flow013_1  = y_meas[y_offset+ n_obj_013: y_offset + 2 * n_obj_013]
                 flow013_3  = y_meas[y_offset + 2 * n_obj_013: y_offset + 3 * n_obj_013]
-                flow0_err = self.navcams[c].project_to_flow0(points_013) - flow013_0
-                flow1_err = self.navcams[c].project_to_flow1(points_013, rot_vecs, trans_vecs) - flow013_1
-                flow3_err = self.navcams[c].project_to_flow3(
-                    points_013, self.navcams[c].calib_R2, self.navcams[c].calib_t) - flow013_3
+
+                flow0_err = reprojection_error(points_013, flow013_0, camera_matrix)
+                flow1_err = reprojection_error(points_013, flow013_1, camera_matrix, rot_vecs, trans_vecs)
+                flow3_err = reprojection_error(points_013, flow013_3, stereo_matrix, stereo_rotation, stereo_translation)
+                
                 flow013_errs = np.vstack((flow0_err, flow1_err, flow3_err))
                 x0_offset += 3 * n_obj_013
                 y_offset += 3 * n_obj_013
@@ -998,10 +890,11 @@ class EgoMotion:
                 points_01  = x0[x0_offset: x0_offset+3*n_obj_01].reshape(-1, 3)
                 flow01_0  = y_meas[y_offset: y_offset + n_obj_01]
                 flow01_1  = y_meas[y_offset + n_obj_01: y_offset + 2 * n_obj_01]
-            
-                flow01_err0 = self.navcams[c].project_to_flow0(points_01) - flow01_0
-                flow01_err1 = self.navcams[c].project_to_flow1(points_01, rot_vecs, trans_vecs) - flow01_1
-                flow01_errs = np.vstack((flow01_err0, flow01_err1))
+                
+                flow0_err = reprojection_error(points_01, flow01_0, camera_matrix)
+                flow1_err = reprojection_error(points_01, flow01_1, camera_matrix, rot_vecs, trans_vecs)
+
+                flow01_errs = np.vstack((flow0_err, flow1_err))
         
                 x0_offset += 3 * n_obj_01
                 y_offset += 2 * n_obj_01
@@ -1018,21 +911,33 @@ class EgoMotion:
         if img_idx is None or img_idx == 0:
             return None, None
 
-        # Initialize the initial egomotion estimation by using the monocamera 
-        est_R = np.random.normal(0, 0.01, [3,1])
-        est_t = np.random.normal(0, 0.01, [3,1])
-        num_cams = len(cam_list)
-        mono_R, mono_t = self.navcams[0].mono_ego_motion_estimation()
-        if mono_R is not None:
-            est_R = mono_R
-            est_t = self.prev_scale * mono_t if self.prev_scale is not None else mono_t
+        est_R = None
+        est_t = None
+        # Estimate the initial egomotion by using a single camera 
+        mono_R0, mono_t0 = self.navcams[0].mono_ego_motion_estimation()
+        mono_R1, mono_t1 = self.navcams[1].mono_ego_motion_estimation()
+
+        if DATASET == 'kite':
+            mono_R2, mono_t2 = self.navcams[2].mono_ego_motion_estimation()
+            mono_R3, mono_t3 = self.navcams[3].mono_ego_motion_estimation()
+
+        mono_R, mono_t =  mono_R0, mono_t0
+        if mono_R is None:
+            mono_R, mono_t =  mono_R1, mono_t1
+
+        # import pdb ; pdb.set_trace()
+
+        # if mono_R:
+        est_R = mono_R
+        est_t = self.prev_scale * mono_t if self.prev_scale is not None else mono_t
 
         if est is not None:
             est_R = est[0]
             est_t = est[1]
+
+        num_cams = len(cam_list)
         cam_obs = np.zeros([num_cams, 2], dtype=np.int)
         y_meas = None
-
         x0 = np.vstack([est_R, est_t])
 
         for k in range(num_cams):
@@ -1048,7 +953,10 @@ class EgoMotion:
                 flow1 = cur_cam.flow_intra_inter1
                 flow3 = cur_cam.flow_intra_inter3
 
-                points013, terr013_0, terr013_1 = cur_cam.triangulate_3d_points(flow0, flow3)
+                points013, terr013_0, terr013_1 = triangulate_3d_points(flow0, flow3, 
+                                           cur_cam.calib_K, cur_cam.stereo_pair_cam.calib_K, 
+                                           cur_cam.calib_R, cur_cam.calib_t)
+
                 flow013_z = np.vstack([flow0, flow1, flow3])
                 y_meas = flow013_z if y_meas is None else np.vstack([y_meas, flow013_z])
 
@@ -1057,14 +965,16 @@ class EgoMotion:
             if n_obs_j > 0:
                 flow0 = cur_cam.flow_intra0
                 flow1 = cur_cam.flow_intra1
-                points01, terr01_0, terr01_1 =  cur_cam.triangulate_3d_points_intra(flow0, flow1, cv2.Rodrigues(est_R)[0], est_t)
+                points01, terr01_0, terr01_1 = triangulate_3d_points(flow0, flow1, 
+                                               cur_cam.calib_K, cur_cam.calib_K,
+                                               cv2.Rodrigues(est_R)[0], est_t)
+
                 x0 = np.vstack([x0, points01.ravel().reshape(-1, 1)])
                 flow01_z = np.vstack([flow0, flow1])
                 y_meas = flow01_z if y_meas is None else np.vstack([y_meas, flow01_z])
 
             cam_obs[k][0] = n_obs_i
             cam_obs[k][1] = n_obs_j
-            # import pdb; pdb.set_trace()
 
         if y_meas is None or y_meas.shape[0] < 9:
             R, t = self.update_global_camera_pose_egomotion(cv2.Rodrigues(est_R)[0], est_t.reshape(3,))
@@ -1085,19 +995,20 @@ class EgoMotion:
                     method='trf')
 
         t0 = datetime.now()
+        res = None
         # err0 = self.global_fun(x0, cam_obs, y_meas, cam_list)
         try:
             res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), **ls_pars)
         except:
             import pdb; pdb.set_trace()
+        if res is None:
+            return self.ego_R, self.ego_t
+
         t1 = datetime.now()
         ego_elapsed = t1 - t0
 
         err1 = self.global_fun(res.x, cam_obs, y_meas, cam_list)
         err_level = norm(err1)
-
-        if res is None:
-            return self.ego_R, self.ego_t
 
         R = cv2.Rodrigues(res.x[0:3])[0]
         t = res.x[3:6]
@@ -1106,7 +1017,8 @@ class EgoMotion:
         avg_least_square_conf = self.least_square_conf / (self.img_idx)
 
 
-        print('gba:',self.navcams[0].img_idx, ego_elapsed.microseconds / 1000.0, 'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
+        print('gba:',self.navcams[0].img_idx, ego_elapsed.microseconds / 1000.0, 
+              'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
 
         if err_level > 5 * avg_least_square_conf:
             return self.pose_R, self.pose_t
@@ -1134,7 +1046,6 @@ def _main(args):
     if not os.path.exists(output_path):
         os.mkdir(output_path)
     if num_features < 64:
-        print()
         num_features = 64
     if dataset == 'kite' and not os.path.exists(calib_file):
         raise Exception, 'Kite data but no valid calib fie'
@@ -1155,8 +1066,9 @@ def _main(args):
     kv = EgoMotion(**em_pars)
 
     traj = np.zeros((1000, 1000, 3), dtype=np.uint8)
-    kv.write_camera_calib_to_json('/tmp/test.json')
-    import pdb; pdb.set_trace()
+    kv.write_header_to_json('/tmp/test2.json')
+
+    # import pdb; pdb.set_trace()
     for img_id in range(kv.num_imgs):
         camera_images = kv.read_one_image(img_id)
 
@@ -1164,18 +1076,21 @@ def _main(args):
         kv.update_keypoints()
         kv.update_sparse_flow()
         kv.filter_nav_keypoints(debug=False)
+        
+        if dataset == 'kitti':
+            abs_scale = kv.load_kitti_gt(img_id)
 
-        abs_scale = kv.get_abs_scale(img_id)
         global_tr = np.zeros([3, 1])
         stereo_tr = np.zeros([3, 1])
         kv.navcams[0].local_bundle_adjustment(True)
         stereo_rot, stereo_tr = kv.navcams[0].get_stereo_camera_pose()
-        global_rot, global_tr = kv.global_ego_motion_solver(img_id, cam_list=[0, 1])
-        kv.update_features_to_json('/tmp/test.json', img_id)
+        global_rot, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST)
+        # kv.update_features_to_json('/tmp/test.json', img_id)
 
         if img_id >= 1:
             x, y, z = global_tr[0], global_tr[1], global_tr[2]
             x1, y1, z1 = stereo_tr[0], stereo_tr[1], stereo_tr[2]
+            # import pdb ; pdb.set_trace()
         else:
             x, y, z = 0., 0., 0.
             x1, y1, z1 = 0., 0., 0.
@@ -1200,10 +1115,14 @@ def _main(args):
         cv2.rectangle(traj, (10, 20), (600, 60), (0,0,0), -1)
         text = "Img:%3d, Coordinates: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x1, y1, z1)
         cv2.putText(traj, text, (20,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-        img1 = cv2.resize(cv2.cvtColor(camera_images[0], cv2.COLOR_GRAY2BGR), (640, 480))
-        img2 = cv2.resize(cv2.cvtColor(camera_images[1], cv2.COLOR_GRAY2BGR), (640, 480))
-        img = concat_images(img1, img2)        
-        cv2.imshow('Navigation cameras', img)
+
+        img_bgr = []
+        for i in range(len(CAMERA_LIST)):
+            img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (320, 240))
+            img_bgr.append(img)
+        img_ = concat_images_list(img_bgr)
+      
+        cv2.imshow('Navigation cameras', img_)
         cv2.imshow('Trajectory' + seq, traj)
         cv2.waitKey(1)
     traj_name = 'seq_' + seq + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '.png'

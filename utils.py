@@ -14,7 +14,6 @@ import time
 
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 ''' Util functions '''
 def gaussian_blur(img, kernel=(5,5)):
@@ -32,6 +31,24 @@ def concat_images(imga, imgb):
     new_img = np.zeros(shape=(max_height, total_width, 3), dtype=np.uint8)
     new_img[:ha,:wa]=imga
     new_img[:hb,wa:wa+wb]=imgb
+    return new_img
+
+
+def concat_images_list(im_list):
+    """
+    Combines a list of images vertically. Those images must have the same shape
+    """
+    n_images = len(im_list)
+    if n_images == 0:
+        return None
+    if n_images == 1:
+        return im_list[0]
+
+    im_height, im_width = im_list[0].shape[:2]
+    concat_height = n_images * im_height
+    concat_width = im_width
+    # new_img = np.zeros(shape=(concat_height, concat_width, 3), dtype=np.uint8)
+    new_img = np.vstack(im_list)
     return new_img
 
 def load_kite_config(cfg_file='nav_calib.cfg', num_cams=4):
@@ -64,6 +81,11 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
     dist = [None] * num_cams
     cam_rot = [None] * num_cams
     cam_trans = [None] * num_cams
+    scaling_mtx = np.zeros([3, 3])
+
+    scaling_mtx[0][0] = 1248.0 / 1241.0
+    scaling_mtx[1][1] = 1.0
+    scaling_mtx[2][2] = 1.0
 
     for cam_id, line in enumerate(lines):
         P0 = line.split(' ')[1:]
@@ -74,7 +96,9 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
         # import pdb; pdb.set_trace()
         trans = P0[:,3].reshape(3,1)
         trans = np.dot(inv(mtx), trans)
+        mtx = np.dot(scaling_mtx, mtx)
         cam_matrix[cam_id] = mtx
+        # import pdb ; pdb.set_trace()
         dist[cam_id] = None
         cam_rot[cam_id] = rot
         cam_trans[cam_id] = trans
@@ -127,7 +151,9 @@ def read_kitti_image(camera_images, num_cams, img_idx=0):
     imgs_x4 = []
     for c in range(num_cams):
         im = Image.open(camera_images[c][img_idx])
-        imgs_x4.append(np.asarray(im))
+        resized_image = im
+        resized_image = im.resize((1248, 376), Image.BICUBIC);
+        imgs_x4.append(np.asarray(resized_image))
     return imgs_x4
 
 def read_kite_image(camera_images, num_cams=None, img_idx=0):
@@ -149,7 +175,8 @@ def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
     return camera_images
 
 def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4):
-    img_files = glob.glob(kite_base + '*.jpg')
+    # import pdb ; pdb.set_trace()
+    img_files = glob.glob(kite_base + '/*.jpg')
     img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
     return img_files
 
@@ -283,7 +310,7 @@ def essential(R01, T01):
     E = np.dot(T01_cross, R01)
     return E
 
-def fundmental_matrix(R01, T01, K0, K1):
+def fundamental_matrix(R01, T01, K0, K1):
     E = essential(R01, T01)
     K1_inv_transpose = np.linalg.inv(K1).T
     K0_inv = np.linalg.inv(K0)
@@ -352,19 +379,72 @@ def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (8, 8)):
     flow_kpt2, st, err = cv2.calcOpticalFlowPyrLK(target_im, curr_im, flow_kpt1, None, **lk_params)
     return flow_kpt0, flow_kpt1, flow_kpt2 
 
-def rotate(points, rot_vecs):
+
+def construct_projection_mtx(K1, K2, R, t):
+    left_T = np.eye(4)[:3]
+    left_mtx = np.dot(K1, left_T)
+    right_T = np.zeros([3,4])
+    right_T[0:3,0:3] = R
+    right_T[:,3][:3] = t.ravel()
+    right_mtx = np.dot(K2, right_T)
+    return left_mtx, right_mtx
+
+def triangulate_3d_points(left_kpts, right_kpts, left_K, right_K, rotation, translation):
+    left_p, right_p = construct_projection_mtx(left_K, right_K, rotation, translation)
+
+    if right_kpts is None:
+        return None
+    if len(left_kpts) < 1 or len(right_kpts) < 1:
+        return None
+    try:
+        scene_pts = cv2.triangulatePoints(left_p, right_p, left_kpts.T, right_kpts.T).T
+    except:
+        print('cv2.triangulatePoints() failed')
+        return None
+    # import pdb; pdb.set_trace()
+    left_proj = np.dot(left_p, scene_pts.T).T
+    left_proj = left_proj[:,0:2] / left_proj[:,2][:,np.newaxis]
+    err_left = left_proj - left_kpts
+
+    right_proj = np.dot(right_p, scene_pts.T).T
+    right_proj = right_proj[:,0:2] / right_proj[:,2][:,np.newaxis]
+    err_right  = right_proj - right_kpts
+    points_cam_cur = scene_pts[:,0:3] / scene_pts[:,3][:,np.newaxis]
+    return points_cam_cur, err_left, err_right
+
+def rotate_and_translate(points, rotation_vector, trans_vector):
     """Rotate points by given rotation vectors.
     Rodrigues' rotation formula is used.
     """
-    rot_vecs = rot_vecs.reshape(1, -1)
-    theta = np.linalg.norm(rot_vecs, axis=1)[:, np.newaxis]
-    with np.errstate(invalid='ignore'):
-        v = rot_vecs / theta
-        v = np.nan_to_num(v)
-    dot = np.sum(points * v, axis=1)[:, np.newaxis]
-    cos_theta = np.cos(theta)
-    sin_theta = np.sin(theta)
-    return cos_theta * points + sin_theta * np.cross(v, points) + dot * (1 - cos_theta) * v
+    if rotation_vector is None and trans_vector is None:
+        return points
+    if rotation_vector is not None:
+        rotation_vector = rotation_vector.reshape(1, -1)
+        theta = np.linalg.norm(rotation_vector, axis=1)[:, np.newaxis]
+        with np.errstate(invalid='ignore'):
+            v = rotation_vector / theta
+            v = np.nan_to_num(v)
+        dot = np.sum(points * v, axis=1)[:, np.newaxis]
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        points = cos_theta * points + sin_theta * np.cross(v, points) + dot * (1 - cos_theta) * v
+
+    if trans_vector is not None:
+        trans_vector = trans_vector.reshape(1, -1)
+        points += trans_vector
+    return points
+
+
+def reprojection_error(points_3x1=None, observations_2x1=None, camera_matrix_3x3=None, rotation_vector_3x1=None, translation_vector_3x1=None):
+    """ Project an 3D scene points to image plane and calculate the the residuals with respect to the measurement
+    """
+    if points_3x1 is None or observations_2x1 is None or camera_matrix_3x3 is None:
+            return None
+    projected_points = rotate_and_translate(points_3x1, rotation_vector_3x1, translation_vector_3x1)
+    projected_points = np.dot(camera_matrix_3x3, projected_points.T).T
+    # convert the projected points to the P2 homogenous coordinates
+    projected_points = projected_points[:, :2] / projected_points[:, 2, np.newaxis]
+    return projected_points - observations_2x1
 
 
 # Note: this sparse matrix only care bout keypoints which has both intra and inter matching
