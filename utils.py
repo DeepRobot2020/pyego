@@ -84,8 +84,8 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
     cam_trans = [None] * num_cams
     scaling_mtx = np.zeros([3, 3])
 
-    scaling_mtx[0][0] = 1248.0 / 1241.0
-    scaling_mtx[1][1] = 1.0
+    scaling_mtx[0][0] = 1280.0 / 1241.0
+    scaling_mtx[1][1] = 480.0 / 376.0
     scaling_mtx[2][2] = 1.0
 
     for cam_id, line in enumerate(lines):
@@ -153,7 +153,7 @@ def read_kitti_image(camera_images, num_cams, img_idx=0):
     for c in range(num_cams):
         im = Image.open(camera_images[c][img_idx])
         resized_image = im
-        resized_image = im.resize((1248, 376), Image.BICUBIC);
+        resized_image = im.resize((1280, 480), Image.BICUBIC);
         imgs_x4.append(np.asarray(resized_image))
     return imgs_x4
 
@@ -166,15 +166,27 @@ def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
     seq_path =  os.path.join(seq_path, data_seq)
     camera_images = []
     for c in range(max_cam):
-        images_base= os.path.join(seq_path, 'image_' + str(c))
+        images_base= os.path.join(seq_path, 'resized_image_' + str(c))
         if not os.path.exists(images_base):
             continue
         img_files = glob.glob(images_base + '/*.png')
-        # import pdb; pdb.set_trace()
-        # img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
         img_files = sorted(img_files)
+        resize_folder = os.path.join(seq_path, 'resized_image_' + str(c))
+        resize_images(img_files, resize_folder, (1280, 480))
         camera_images.append(img_files)
     return camera_images
+
+def resize_images(image_list,  output_path, target_size = (1280, 480)):
+    if not os.path.exists(output_path):
+        os.mkdir(output_path)
+    else:
+        return
+    for im_file in image_list:
+        im_name = im_file.split('/')[-1]
+        im_name = os.path.join(output_path, im_name)
+        im = Image.open(im_file)
+        resized_im = im.resize(target_size, Image.BICUBIC);
+        resized_im.save(im_name)
 
 def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4):
     # import pdb ; pdb.set_trace()
@@ -377,7 +389,6 @@ def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (8, 8)):
     # perform a reverse match
     flow_kpt2, st, err = cv2.calcOpticalFlowPyrLK(target_im, curr_im, flow_kpt1, None, **lk_params)
     return flow_kpt0, flow_kpt1, flow_kpt2 
-
 
 def construct_projection_mtx(K1, K2, R, t):
     left_T = np.eye(4)[:3]

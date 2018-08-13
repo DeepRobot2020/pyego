@@ -66,7 +66,7 @@ parser.add_argument(
     '--num_features',
     type=int,
     help='Max number of features',
-    default=64)
+    default=256)
 
 parser.add_argument(
     '-num_cam',
@@ -80,7 +80,7 @@ parser.add_argument(
     '--enable_ransac',
     type=bool,
     help='Enable Ransac for Egomotion estimation',
-    default=2)
+    default=False)
 
 
 parser.add_argument(
@@ -88,6 +88,13 @@ parser.add_argument(
     '--external_json_pose',
     help='Debug a extimated pose',
     default=None)
+
+parser.add_argument(
+    '-use_kite_kpts',
+    '--use_kite_kpts',
+    help='use keypoints from kite',
+    type=bool,
+    default=False)
 
 class KTPinholeCamera:
     def __init__(self, width, height, fx, fy, cx, cy, k1=0.0, k2=0.0, p1=0.0, p2=0.0, k3=0.0):
@@ -444,7 +451,6 @@ class navcam:
             return (None, [-1.0, -1.0, -1.0])
         # import pdb; pdb.set_trace()
 
-        # sparse_A = local_bundle_adjustment_sparsity(cam_obs[self.index], 1)
         sparse_A = global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=2)   
 
         x0 = x0.flatten()
@@ -684,7 +690,7 @@ class navcam:
       
 class EgoMotion:
     """Kite vision object"""
-    def __init__(self, calib_file=None, num_cams=4, num_features=64, dataset=DATASET, input_path=None, data_seq=None, json_output=True, ransac=False):
+    def __init__(self, calib_file=None, num_cams=4, num_features=256, dataset=DATASET, input_path=None, data_seq=None, json_output=True, ransac=False):
         self.num_features = num_features
         self.navcams      = []
         self.STEREOCONFG    = [1, 0, 3, 2]
@@ -773,9 +779,30 @@ class EgoMotion:
         self.trueX, self.trueY, self.trueZ = x, y, z
         return np.sqrt((x - x_prev)*(x - x_prev) + (y - y_prev)*(y - y_prev) + (z - z_prev)*(z - z_prev))
        
-    def update_keypoints(self):
-        for i in range(self.num_cams):
-            self.navcams[i].keypoint_detection()
+    def update_keypoints(self, img_id, use_kite_kpts):
+        frame_file_name = 'kv_frame' + str(img_id) + '.json'
+        json_file = os.path.join(KITE_KPTS_PATH, frame_file_name)
+        load_kite_kpts_good = False
+
+        if use_kite_kpts:
+            if not os.path.exists(json_file):
+                print(json_file, 'does not exist, using shi tomasi')
+            else:
+                print('loading...' + json_file)
+                load_kite_kpts_good = True
+                with open(json_file, 'r') as f:
+                    data = json.load(f)
+                    for i in range(self.num_cams):
+                        flow_kpts = np.array(data['cam'+str(i)]['flow_kpts'], dtype=np.float32)
+                        flow_kpts = flow_kpts.reshape(-1, 10)
+                        flow_kpts = flow_kpts[:, 0:2]
+                        flow_kpt0 = flow_kpts.reshape(-1, 1, 2).astype(np.float32)
+                        # flow_kpt0 = np.astype(np.float32)
+                        # import pdb; pdb.set_trace()
+                        self.navcams[i].flow_kpt0 = flow_kpt0          
+        if not load_kite_kpts_good:
+            for i in range(self.num_cams):
+                self.navcams[i].keypoint_detection()
 
     def update_sparse_flow(self):
         for i in range(self.num_cams):
@@ -896,7 +923,8 @@ class EgoMotion:
 
         if mono_R is None:
             mono_R, mono_t =  mono_R1, mono_t1
-            import pdb; pdb.set_trace()
+            if mono_R is None:
+                import pdb; pdb.set_trace()
         else:
             est_R = mono_R
             est_t = self.prev_scale * mono_t if self.prev_scale is not None else mono_t
@@ -939,24 +967,26 @@ class EgoMotion:
                 y_meas = flow013_z if y_meas is None else np.vstack([y_meas, flow013_z])
 
                 x0 = np.vstack([x0, points013.ravel().reshape(-1, 1)])
-                json_data['cam'+str(c)]['flow013_0'] = flow0.ravel().tolist()
-                json_data['cam'+str(c)]['flow013_1'] = flow1.ravel().tolist()
-                json_data['cam'+str(c)]['flow013_3'] = flow3.ravel().tolist()
+
+                flow013_json = np.hstack([flow0, flow1, flow3])
+                json_data['cam'+str(c)]['flow013'] = flow013_json.ravel().tolist()
                 json_data['cam'+str(c)]['flow013_init'] = points013.ravel().tolist()
 
             if n_obs_j > 0:
                 flow0 = cur_cam.flow_intra0
                 flow1 = cur_cam.flow_intra1
-                points01, terr01_0, terr01_1 = triangulate_3d_points(flow0, flow1, 
-                                               cur_cam.calib_K, cur_cam.calib_K,
-                                               cv2.Rodrigues(est_R)[0], est_t)
-
+                try:
+                    points01, terr01_0, terr01_1 = triangulate_3d_points(flow0, flow1, 
+                                                cur_cam.calib_K, cur_cam.calib_K,
+                                                cv2.Rodrigues(est_R)[0], est_t)
+                except:
+                    import pdb; pdb.set_trace()
                 x0 = np.vstack([x0, points01.ravel().reshape(-1, 1)])
                 flow01_z = np.vstack([flow0, flow1])
                 y_meas = flow01_z if y_meas is None else np.vstack([y_meas, flow01_z])
 
-                json_data['cam'+str(c)]['flow01_0'] = flow0.ravel().tolist()
-                json_data['cam'+str(c)]['flow01_1'] = flow1.ravel().tolist()
+                flow01_json = np.hstack([flow0, flow1])
+                json_data['cam'+str(c)]['flow01'] = flow01_json.ravel().tolist()
                 json_data['cam'+str(c)]['flow01_init'] = points01.ravel().tolist()
 
             cam_obs[k][0] = n_obs_i
@@ -982,12 +1012,15 @@ class EgoMotion:
 
         t0 = datetime.now()
         res = None
-        # err0 = self.global_fun(x0, cam_obs, y_meas, cam_list)
+        err0 = self.global_fun(x0, cam_obs, y_meas, cam_list)
         try:
             res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), **ls_pars)
         except:
             import pdb; pdb.set_trace()
         
+        err1 = self.global_fun(res.x, cam_obs, y_meas, cam_list)
+
+
         if res is None:
             import pdb; pdb.set_trace()
             return self.ego_R, self.ego_t
@@ -1052,6 +1085,7 @@ def _main(args):
     dataset = args.dataset_type.lower()
     seq = ("%02d" % (args.seq_num))  if (dataset == 'kitti') else str(args.seq_num)
     external_json_pose = args.external_json_pose
+    use_kite_kpts = args.use_kite_kpts
 
     if not os.path.exists(output_path):
         os.mkdir(output_path)
@@ -1109,7 +1143,7 @@ def _main(args):
             print(frame_name, img_id, estimated_rt)
             _, global_tr = kv.update_global_camera_pose_egomotion(R, t.reshape(3,1))
         else:
-            kv.update_keypoints()
+            kv.update_keypoints(img_id, use_kite_kpts)
             kv.update_sparse_flow()
             kv.filter_nav_keypoints(debug=False)
             _, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST, debug_json_path='/tmp')
