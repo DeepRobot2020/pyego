@@ -166,7 +166,7 @@ def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
     seq_path =  os.path.join(seq_path, data_seq)
     camera_images = []
     for c in range(max_cam):
-        images_base= os.path.join(seq_path, 'resized_image_' + str(c))
+        images_base= os.path.join(seq_path, 'image_' + str(c))
         if not os.path.exists(images_base):
             continue
         img_files = glob.glob(images_base + '/*.png')

@@ -780,7 +780,7 @@ class EgoMotion:
         return np.sqrt((x - x_prev)*(x - x_prev) + (y - y_prev)*(y - y_prev) + (z - z_prev)*(z - z_prev))
        
     def update_keypoints(self, img_id, use_kite_kpts):
-        frame_file_name = 'kv_frame' + str(img_id) + '.json'
+        frame_file_name = 'kvrawframe' + str(img_id) + '.json'
         json_file = os.path.join(KITE_KPTS_PATH, frame_file_name)
         load_kite_kpts_good = False
 
@@ -939,7 +939,7 @@ class EgoMotion:
 
         json_data = {}
         json_data['egomotion'] = {}
-        json_data['egomotion']['init'] = x0.ravel().tolist()
+        json_data['egomotion']['initial'] = x0.ravel().tolist()
     
         for k in range(num_cams):
             c = cam_list[k]
@@ -1035,7 +1035,7 @@ class EgoMotion:
         t = res.x[3:6]
 
         
-        json_data['egomotion']['opt'] = res.x[0:6].ravel().tolist()
+        json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
         x_offset = 6
         for c in cam_list:
             n_obj_013, n_obj_01 = cam_obs[c]
@@ -1059,7 +1059,7 @@ class EgoMotion:
               'est_rot', res.x[0:3], 'est_tras', res.x[3:6], 'conf', norm(err1), avg_least_square_conf)
 
         if debug_json_path:
-            outfile = os.path.join(debug_json_path, 'frame'+str(img_idx)+'.json')
+            outfile = os.path.join(debug_json_path, 'pyframe'+str(img_idx)+'.json')
             with open(outfile, 'w') as f:
                 json.dump(json_data, f, sort_keys=True, indent=4)
 
@@ -1118,7 +1118,7 @@ def _main(args):
         external_json_pose = os.path.expanduser(args.external_json_pose)
         with open(external_json_pose) as f:
             json_pose = json.load(f)
-            n_json_pose = json_pose['n_poses']
+            n_json_pose = json_pose['num_poses']
 
     x, y, z = 0., 0., 0.
     global_tr = [0, 0, 0]
@@ -1133,20 +1133,25 @@ def _main(args):
             if img_id < 1:
                 global_tr = [0, 0, 0]
                 continue
+            
+            if img_id >= n_json_pose:
+                break
             frame_name = 'frame' + str(img_id)
-
-            estimated_rt = json_pose[frame_name]
-
-            R = np.array([estimated_rt[0:3]])
-            R = cv2.Rodrigues(R)[0]
-            t = np.array([estimated_rt[3:]])
-            print(frame_name, img_id, estimated_rt)
-            _, global_tr = kv.update_global_camera_pose_egomotion(R, t.reshape(3,1))
+            try:
+                estimated_rt = json_pose[frame_name]['optimized']
+                R = np.array([estimated_rt[0:3]])
+                R = cv2.Rodrigues(R)[0]
+                t = np.array([estimated_rt[3:]])
+                print(frame_name, img_id, estimated_rt)
+                _, global_tr = kv.update_global_camera_pose_egomotion(R, t.reshape(3,1))
+            except:
+                print('warning, no ' + frame_name + ' estimation from json')
+                global_tr = kv.pose_t
         else:
             kv.update_keypoints(img_id, use_kite_kpts)
             kv.update_sparse_flow()
             kv.filter_nav_keypoints(debug=False)
-            _, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST, debug_json_path='/tmp')
+            _, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST, debug_json_path='/tmp/pyego')
 
         # import pdb ; pdb.set_trace()
         if img_id == 0:
