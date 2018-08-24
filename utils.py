@@ -34,6 +34,16 @@ def concat_images(imga, imgb):
     new_img[:hb,wa:wa+wb]=imgb
     return new_img
 
+def hamming_distance_orb(des1, des2):
+    dist = 0
+    for d1, d2 in zip(des1[0].tolist(), des2[0].tolist()):
+        res = bin(d1 ^ d2)
+        # import pdb ; pdb.set_trace()
+        cnt = 0
+        for b in res[2:]:
+            if b == '1':
+                dist += 1
+    return dist
 
 def concat_images_list(im_list):
     """
@@ -59,11 +69,11 @@ def load_kite_config(cfg_file='nav_calib.cfg', num_cams=4):
     cam_trans = [None] * num_cams
     with io.open(cfg_file) as f:
         config = libconf.load(f)
+        # import pdb ; pdb.set_trace()
         cam_config = config['calib']['cam']
         for i in range(num_cams):
             cam_calib = cam_config[i]
             cam_id = int(cam_calib['cam_id'])
-    
             mtx = np.array(cam_calib['camera_matrix']).reshape(3,3)
             dist_coeff = np.array(cam_calib['dist_coeff'])
             rot = np.array(cam_calib['cam_rot']).reshape(3,3)
@@ -83,11 +93,9 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
     cam_rot = [None] * num_cams
     cam_trans = [None] * num_cams
     scaling_mtx = np.zeros([3, 3])
-
     scaling_mtx[0][0] = 1280.0 / 1241.0
     scaling_mtx[1][1] = 480.0 / 376.0
     scaling_mtx[2][2] = 1.0
-
     for cam_id, line in enumerate(lines):
         P0 = line.split(' ')[1:]
         P0 = [float(i) for i in P0]
@@ -97,7 +105,7 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
         # import pdb; pdb.set_trace()
         trans = P0[:,3].reshape(3,1)
         trans = np.dot(inv(mtx), trans)
-        mtx = np.dot(scaling_mtx, mtx)
+        # mtx = np.dot(scaling_mtx, mtx)
         cam_matrix[cam_id] = mtx
         # import pdb ; pdb.set_trace()
         dist[cam_id] = None
@@ -138,7 +146,6 @@ def load_calib_images(self, calib_img_path='~/vo_data/SN40/calib_data/', num_cam
         img_files = glob.glob(cam_path + '*.jpg')
         img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
         cam_files[c] = img_files
-
     cam_imgs = []
     for i in range(max_imgs):
         imgs_x4 = []
@@ -149,24 +156,24 @@ def load_calib_images(self, calib_img_path='~/vo_data/SN40/calib_data/', num_cam
     return cam_imgs
 
 def read_kitti_image(camera_images, num_cams, img_idx=0):
-    imgs_x4 = []
+    imgs_x2 = []
     for c in range(num_cams):
         im = Image.open(camera_images[c][img_idx])
         resized_image = im
-        resized_image = im.resize((1280, 480), Image.BICUBIC);
-        imgs_x4.append(np.asarray(resized_image))
-    return imgs_x4
+        imgs_x2.append(np.asarray(resized_image))
+    return imgs_x2
 
 def read_kite_image(camera_images, num_cams=None, img_idx=0):
-    imgs_x4 = pil_split_rotate_navimage_4(camera_images[img_idx])
+    # imgs_x4 = pil_split_rotate_kite_record_image(camera_images[img_idx])
+    imgs_x4 = split_kite_vertical_images(camera_images[img_idx])
     return imgs_x4
 
-def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
+def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
     seq_path =  os.path.join(kitti_base, 'sequences')
     seq_path =  os.path.join(seq_path, data_seq)
     camera_images = []
     for c in range(max_cam):
-        images_base= os.path.join(seq_path, 'image_' + str(c))
+        images_base = os.path.join(seq_path, 'image_' + str(c))
         if not os.path.exists(images_base):
             continue
         img_files = glob.glob(images_base + '/*.png')
@@ -176,7 +183,7 @@ def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=4):
         camera_images.append(img_files)
     return camera_images
 
-def resize_images(image_list,  output_path, target_size = (1280, 480)):
+def resize_images(image_list,  output_path, target_size = (None, None)):
     if not os.path.exists(output_path):
         os.mkdir(output_path)
     else:
@@ -189,7 +196,6 @@ def resize_images(image_list,  output_path, target_size = (1280, 480)):
         resized_im.save(im_name)
 
 def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4):
-    # import pdb ; pdb.set_trace()
     img_files = glob.glob(kite_base + '/*.jpg')
     img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
     return img_files
@@ -263,10 +269,9 @@ def translateImage3D(img, K_mtx, t):
 def shi_tomasi_corner_detection(img, kpts_num=64):
     feature_params = dict( maxCorners = kpts_num,
                        qualityLevel = 0.05,
-                       minDistance = 8,
-                       blockSize = 7 )
+                       minDistance = 36,
+                       blockSize = 7)
     return cv2.goodFeaturesToTrack(img, mask = None, **feature_params)
-
 
 def epi_constraint(pts1, pts2, F):
     pts1 = pts1.reshape(pts1.shape[0], -1)
@@ -337,7 +342,7 @@ def invert_RT(R, T):
     T2 = -np.dot(R2, T)
     return R2, T2
 
-def pil_split_rotate_navimage_4(img_file):
+def pil_split_rotate_kite_record_image(img_file):
     """Split recorded nav images to 4
     # 0 | 3
     # 1 | 2
@@ -351,6 +356,24 @@ def pil_split_rotate_navimage_4(img_file):
     splited_images[3] = np.asarray(im.crop((width//2, 0, width, height//2)).rotate(90, expand=1))
     for i in range(4):
         splited_images[i] =cv2.cvtColor(splited_images[i], cv2.COLOR_RGB2GRAY)
+    return splited_images
+
+def split_kite_vertical_images(img_file):
+    """Split recorded nav images to 4
+    # 0 
+    # 1 
+    # 2
+    # 3
+    """
+    im = Image.open(img_file)
+    width, height = im.size
+    im_width = width
+    im_height = height // 4
+    splited_images    = 4 * [None]
+    splited_images[0] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 0, im_width, im_height * 1))), cv2.COLOR_RGB2GRAY)
+    splited_images[1] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 1, im_width, im_height * 2))), cv2.COLOR_RGB2GRAY)
+    splited_images[2] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 2, im_width, im_height * 3))), cv2.COLOR_RGB2GRAY)
+    splited_images[3] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 3, im_width, im_height * 4))), cv2.COLOR_RGB2GRAY)
     return splited_images
 
 def cv_split_navimage_4(img_file):
@@ -372,18 +395,18 @@ def load_recorded_images(record_path='./', max_imgs=10):
     img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
     cam_imgs = [[] for i in range(4)]
     for file in img_files:
-        imgs_x4 = pil_split_rotate_navimage_4(file)
+        imgs_x4 = pil_split_rotate_kite_record_image(file)
         for c in range(4):
             cam_imgs[c].append(imgs_x4[c])
     return cam_imgs
 
 
-def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (8, 8)):
+def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (16, 16)):
     # Parameters for lucas kanade optical flow
     lk_params = dict( winSize  = win_size,
                     maxLevel = 4,
                     minEigThreshold=1e-4,
-                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5, 0.01))
+                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 4, 0.01))
     # perform a forward match
     flow_kpt1, st, err = cv2.calcOpticalFlowPyrLK(curr_im, target_im, flow_kpt0, None, **lk_params)
     # perform a reverse match
