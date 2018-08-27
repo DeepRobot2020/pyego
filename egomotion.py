@@ -7,9 +7,7 @@ import cv2
 
 from PIL import Image
 
-from numpy.linalg import inv, pinv, norm
-
-from scipy.sparse import lil_matrix
+from numpy.linalg import inv, norm
 from scipy.optimize import least_squares
 
 import time
@@ -506,7 +504,13 @@ class navcam:
         if self.curr_img is None:
             print('Warning: curr_img is None')
             return
-        self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, self.num_features)
+        roi_mask = None
+        if DATASET == 'kite':
+            roi_mask = region_of_interest_mask(self.curr_img.shape, 
+                                        KITE_MASK_VERTICES[self.index], 
+                                        filler = 1)
+
+        self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, roi_mask, self.num_features)
         
     def intra_sparse_optflow(self):
         if self.prev_img is not None:
@@ -688,18 +692,18 @@ class navcam:
                     flow_inter0.append(np.array([x0, y0]))
                     flow_inter3.append(np.array([x3, y3]))
 
-            # if len(flow_intra_inter0) > 8:
-            #     M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
-            #     M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
-            #     mask_flow013 = mask01 & mask03
-            #     flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
-            #     flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
-            #     flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
+            if len(flow_intra_inter0) > 8:
+                M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
+                M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
+                mask_flow013 = mask01 & mask03
+                flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
+                flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
+                flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
 
-            # if len(flow_intra0) > 8:
-            #     M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
-            #     flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
-            #     flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
+            if len(flow_intra0) > 8:
+                M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
+                flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
+                flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
 
             self.flow_intra_inter0 = np.array(flow_intra_inter0, dtype=np.float)
             self.flow_intra_inter1 = np.array(flow_intra_inter1, dtype=np.float)
@@ -718,7 +722,6 @@ class navcam:
                 self.debug_inter_keypoints(out_dir)
                 self.debug_intra_keypoints(out_dir)
                 print('img', self.img_idx, 'cam_'+ str(self.index ), 'intra_inter:' + str(len(self.flow_intra_inter0)), 'intra:' + str(len(self.flow_intra0)), 'inter:'+str(len(self.flow_inter0)))
-                import pdb; pdb.set_trace()
 
       
 class EgoMotion:
@@ -978,8 +981,7 @@ class EgoMotion:
         json_data = {}
         json_data['egomotion'] = {}
         json_data['egomotion']['initial'] = x0.ravel().tolist()
-    
-        import pdb; pdb.set_trace()
+
         for k in range(num_cams):
             c = cam_list[k]
             if self.navcams[c].flow_intra_inter0 is None:
@@ -1073,8 +1075,6 @@ class EgoMotion:
         R = cv2.Rodrigues(res.x[0:3])[0]
         t = res.x[3:6]        
         json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
-
-        import pdb; pdb.set_trace()
 
         x_offset = 6
         for c in cam_list:

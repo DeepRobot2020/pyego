@@ -3,6 +3,7 @@ import glob, math
 import os, io, libconf, copy
 import cv2
 from PIL import Image
+from scipy.sparse import lil_matrix
 
 
 ''' Util functions '''
@@ -10,7 +11,6 @@ from PIL import Image
 def canny(img, low_threshold, high_threshold):
     """Applies the Canny transform"""
     return cv2.Canny(img, low_threshold, high_threshold)
-
 
 def split_and_write_image(image_file_path, out_image_path = '/tmp'):
     imgs_x4 = split_kite_vertical_images(image_file_path)
@@ -22,7 +22,7 @@ def split_and_write_image(image_file_path, out_image_path = '/tmp'):
 def gaussian_blur(img, kernel=(5,5)):
      return cv2.GaussianBlur(img, kernel, 0)
 
-def region_of_interest_mask(image_shape, vertices):
+def region_of_interest_mask(image_shape, vertices, filler = None):
     """
     Applies an image mask.
     
@@ -30,8 +30,11 @@ def region_of_interest_mask(image_shape, vertices):
     formed from `vertices`. The inside of the polygon is set to black.
     """
     #defining a blank mask to start with
-    mask = np.zeros(image_shape, dtype=np.uint8)   
-    mask.fill(255)
+    mask = np.zeros(image_shape, dtype=np.uint8) 
+    if not filler:  
+        mask.fill(255)
+    else:
+        mask.fill(1)
 
     #defining a 3 channel or 1 channel color to fill the mask with depending on the input image
     if len(image_shape) > 2:
@@ -42,7 +45,6 @@ def region_of_interest_mask(image_shape, vertices):
         
     #filling pixels inside the polygon defined by "vertices" with the fill color    
     cv2.fillPoly(mask, vertices, ignore_mask_color)
-
     return mask
 
 def apply_mask_image(img, mask):
@@ -302,12 +304,12 @@ def translateImage3D(img, K_mtx, t):
     warp = cv2.warpPerspective(img, M, (640, 481))
     return warp, M
     
-def shi_tomasi_corner_detection(img, kpts_num=64):
+def shi_tomasi_corner_detection(img, mask = None, kpts_num=64):
     feature_params = dict( maxCorners = kpts_num,
                        qualityLevel = 0.05,
-                       minDistance = 36,
+                       minDistance = 24,
                        blockSize = 7)
-    return cv2.goodFeaturesToTrack(img, mask = None, **feature_params)
+    return cv2.goodFeaturesToTrack(img, mask = mask, **feature_params)
 
 def epi_constraint(pts1, pts2, F):
     pts1 = pts1.reshape(pts1.shape[0], -1)
