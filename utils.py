@@ -1,24 +1,60 @@
-
 import numpy as np
-import glob, pdb, math
-
+import glob, math
 import os, io, libconf, copy
 import cv2
 from PIL import Image
 
-from numpy.linalg import inv, pinv, norm
-
-from scipy.sparse import lil_matrix
-from scipy.optimize import least_squares
-
-import time
-
-
-import matplotlib.pyplot as plt
 
 ''' Util functions '''
+
+def canny(img, low_threshold, high_threshold):
+    """Applies the Canny transform"""
+    return cv2.Canny(img, low_threshold, high_threshold)
+
+
+def split_and_write_image(image_file_path, out_image_path = '/tmp'):
+    imgs_x4 = split_kite_vertical_images(image_file_path)
+    img_name = image_file_path.split('/')[-1].split('.')[0]
+    for i in range(4):
+        out_image_path = out_image_path + '/'+ img_name + '_' + str(i) + '.jpg'
+        cv2.imwrite(out_image_path, imgs_x4[i])
+
 def gaussian_blur(img, kernel=(5,5)):
      return cv2.GaussianBlur(img, kernel, 0)
+
+def region_of_interest_mask(image_shape, vertices):
+    """
+    Applies an image mask.
+    
+    Only keeps the region of the image outside of the polygon
+    formed from `vertices`. The inside of the polygon is set to black.
+    """
+    #defining a blank mask to start with
+    mask = np.zeros(image_shape, dtype=np.uint8)   
+    mask.fill(255)
+
+    #defining a 3 channel or 1 channel color to fill the mask with depending on the input image
+    if len(image_shape) > 2:
+        channel_count = image_shape[2]  # i.e. 3 or 4 depending on your image
+        ignore_mask_color = (0,) * channel_count
+    else:
+        ignore_mask_color = 0
+        
+    #filling pixels inside the polygon defined by "vertices" with the fill color    
+    cv2.fillPoly(mask, vertices, ignore_mask_color)
+
+    return mask
+
+def apply_mask_image(img, mask):
+    """
+    Applies an image mask.
+    
+    Only keeps the region of the image outside of the polygon
+    formed from `vertices`. The inside of the polygon is set to black.
+    """
+    #returning the image only where mask pixels are nonzero
+    masked_image = cv2.bitwise_and(img, mask)
+    return masked_image
 
 
 def concat_images(imga, imgb):
@@ -197,8 +233,8 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
 
 def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4):
     img_files = glob.glob(kite_base + '/*.jpg')
-    img_files.sort(key=lambda f: int(filter(str.isdigit, f))) 
-    return img_files
+    # img_files.sort(key=lambda f: int(filter(str.isdigit, f)))
+    return sorted(img_files)
 
 def load_kitti_poses(cfg_file=None):
     lines = [line.rstrip('\n') for line in open(cfg_file)]

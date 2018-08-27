@@ -67,7 +67,7 @@ parser.add_argument(
     '--num_features',
     type=int,
     help='Max number of features',
-    default=64)
+    default=128)
 
 parser.add_argument(
     '-num_cam',
@@ -510,7 +510,7 @@ class navcam:
         
     def intra_sparse_optflow(self):
         if self.prev_img is not None:
-            k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=(16, 16))
+            k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=(8, 8))
             # self.check_optflow_correctness(k0, self.flow_kpt1, k1, self.curr_img, self.prev_img)
             self.flow_kpt1 = k1
             self.flow_kpt2 = k2
@@ -640,7 +640,6 @@ class navcam:
 
     def filter_keypoints(self, debug=False, out_dir='/home/jzhang/Pictures/tmp/', max_inter_pts = 100):
         if self.prev_img is not None:
-
             self.filter_intra_keypoints(debug=debug, out_dir=out_dir)
             self.filter_inter_keypoints(debug=debug, out_dir=out_dir)
             
@@ -689,18 +688,18 @@ class navcam:
                     flow_inter0.append(np.array([x0, y0]))
                     flow_inter3.append(np.array([x3, y3]))
 
-            if len(flow_intra_inter0) > 8:
-                M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
-                M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
-                mask_flow013 = mask01 & mask03
-                flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
-                flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
-                flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
+            # if len(flow_intra_inter0) > 8:
+            #     M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
+            #     M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
+            #     mask_flow013 = mask01 & mask03
+            #     flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
+            #     flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
+            #     flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
 
-            if len(flow_intra0) > 8:
-                M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
-                flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
-                flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
+            # if len(flow_intra0) > 8:
+            #     M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
+            #     flow_intra0 = [flow_intra0[i] for i in range(len(flow_intra0)) if mask_flow01[i] == 1]
+            #     flow_intra1 = [flow_intra1[i] for i in range(len(flow_intra1)) if mask_flow01[i] == 1]
 
             self.flow_intra_inter0 = np.array(flow_intra_inter0, dtype=np.float)
             self.flow_intra_inter1 = np.array(flow_intra_inter1, dtype=np.float)
@@ -718,8 +717,9 @@ class navcam:
             if debug:    
                 self.debug_inter_keypoints(out_dir)
                 self.debug_intra_keypoints(out_dir)
-                print(self.img_idx, 'cam_'+ str(self.index ), 'intra_inter:' + str(len(self.flow_intra_inter0)), 'intra:' + str(len(self.flow_intra0)), 'inter:'+str(len(self.flow_inter0)))
-        
+                print('img', self.img_idx, 'cam_'+ str(self.index ), 'intra_inter:' + str(len(self.flow_intra_inter0)), 'intra:' + str(len(self.flow_intra0)), 'inter:'+str(len(self.flow_inter0)))
+                import pdb; pdb.set_trace()
+
       
 class EgoMotion:
     """Kite vision object"""
@@ -770,7 +770,7 @@ class EgoMotion:
         rot[2], trans[2] = rot_23, trans_23
         rot[3], trans[3] = rot_32, trans_32
 
-        import pdb ; pdb.set_trace()
+        # import pdb ; pdb.set_trace()
         self.ego_R = cv2.Rodrigues(np.eye(3))[0]
         self.ego_t = np.zeros([3, 1])
 
@@ -979,6 +979,7 @@ class EgoMotion:
         json_data['egomotion'] = {}
         json_data['egomotion']['initial'] = x0.ravel().tolist()
     
+        import pdb; pdb.set_trace()
         for k in range(num_cams):
             c = cam_list[k]
             if self.navcams[c].flow_intra_inter0 is None:
@@ -1155,7 +1156,6 @@ def _main(args):
 
     x, y, z = 0., 0., 0.
     global_tr = [0, 0, 0]
-    # import pdb; pdb.set_trace()
     for img_id in range(kv.num_imgs):
         if dataset == 'kitti':
             kv.load_kitti_gt(img_id)
