@@ -202,8 +202,8 @@ def read_kitti_image(camera_images, num_cams, img_idx=0):
     return imgs_x2
 
 def read_kite_image(camera_images, num_cams=None, img_idx=0):
-    # imgs_x4 = pil_split_rotate_kite_record_image(camera_images[img_idx])
-    imgs_x4 = split_kite_vertical_images(camera_images[img_idx])
+    imgs_x4 = pil_split_rotate_kite_record_image(camera_images[img_idx])
+    # imgs_x4 = split_kite_vertical_images(camera_images[img_idx])
     return imgs_x4
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
@@ -304,12 +304,13 @@ def translateImage3D(img, K_mtx, t):
     warp = cv2.warpPerspective(img, M, (640, 481))
     return warp, M
     
-def shi_tomasi_corner_detection(img, mask = None, kpts_num=64):
+def shi_tomasi_corner_detection(img, roi_mask = None, kpts_num=64):
     feature_params = dict( maxCorners = kpts_num,
                        qualityLevel = 0.05,
-                       minDistance = 24,
-                       blockSize = 7)
-    return cv2.goodFeaturesToTrack(img, mask = mask, **feature_params)
+                       minDistance = 8,
+                       blockSize = 7,
+                       mask = roi_mask)
+    return cv2.goodFeaturesToTrack(img, **feature_params)
 
 def epi_constraint(pts1, pts2, F):
     pts1 = pts1.reshape(pts1.shape[0], -1)
@@ -439,10 +440,10 @@ def load_recorded_images(record_path='./', max_imgs=10):
     return cam_imgs
 
 
-def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (16, 16)):
+def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (18, 18)):
     # Parameters for lucas kanade optical flow
     lk_params = dict( winSize  = win_size,
-                    maxLevel = 4,
+                    maxLevel = 5,
                     minEigThreshold=1e-4,
                     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 4, 0.01))
     # perform a forward match
