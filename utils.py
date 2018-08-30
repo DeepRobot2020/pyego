@@ -4,9 +4,10 @@ import os, io, libconf, copy
 import cv2
 from PIL import Image
 from scipy.sparse import lil_matrix
-
+from numpy.linalg import inv, norm
 
 ''' Util functions '''
+# undistorted_img = undistort_kite_image(img, self.calib_K0, self.calib_K, self.calib_d)
 
 def canny(img, low_threshold, high_threshold):
     """Applies the Canny transform"""
@@ -18,6 +19,64 @@ def split_and_write_image(image_file_path, out_image_path = '/tmp'):
     for i in range(4):
         out_image_path = out_image_path + '/'+ img_name + '_' + str(i) + '.jpg'
         cv2.imwrite(out_image_path, imgs_x4[i])
+
+def estimate_new_camera_matrix_for_undistort_rectify(K, D, image_shape = (640, 480), balance = 0.0, aspect_ratio = 1.0):
+    w = image_shape[0]
+    h = image_shape[1]
+    corners = []
+    corners.append(np.array([w / 2, 0]))
+    corners.append(np.array([w,  h / 2]))
+    corners.append(np.array([w / 2,  h]))
+    corners.append(np.array([0,  h / 2]))
+    corners = np.array(corners, dtype=np.float32)
+    # import pdb; pdb.set_trace()
+    corners = corners.reshape(len(corners), 1, 2)
+    corners = cv2.fisheye.undistortPoints(corners, K, D, np.eye(3))
+
+    center_mass = np.mean(corners)
+    cn = np.array([center_mass, center_mass])
+
+    # import pdb; pdb.set_trace()
+    miny = np.min(corners[:,:,1])
+    maxy = np.max(corners[:,:,1])
+    minx = np.min(corners[:,:,0])
+    maxx = np.max(corners[:,:,0])
+
+    aspect_ratio = K[0][0] / K [1][1]
+
+    cn[0] *= aspect_ratio
+
+    f1 = w * 0.5 / (cn[0] - minx)
+    f2 = w * 0.5 / (maxx - cn[0])
+    f3 = h * 0.5 * aspect_ratio/(cn[1] - miny)
+    f4 = h * 0.5 * aspect_ratio/(maxy - cn[1])
+
+    fmin = min(f1, min(f2, min(f3, f4)))
+    fmax = max(f1, max(f2, max(f3, f4)))
+
+    f = balance * fmin + (1.0 - balance) * fmax
+
+    new_f = [f, f]
+    new_c = -cn * f + np.array([w, h * aspect_ratio]) * 0.5
+    # restore aspect ratio
+    new_f[1] /= aspect_ratio
+    new_c[1] /= aspect_ratio
+
+    new_K = np.array([new_f[0], 0.0, new_c[0], 
+             0.0, new_f[1], new_c[1], 
+             0.0, 0.0, 1.0]).reshape(3, 3)
+
+    return new_K
+
+def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
+    return estimate_new_camera_matrix_for_undistort_rectify(K, D)
+    # return cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, dim, np.eye(3), balance=balance)
+
+def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_org, D, np.eye(3), K_new, dim, cv2.CV_16SC2)
+    undistorted_img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    return undistorted_img
+
 
 def gaussian_blur(img, kernel=(5,5)):
      return cv2.GaussianBlur(img, kernel, 0)
@@ -72,7 +131,30 @@ def concat_images(imga, imgb):
     new_img[:hb,wa:wa+wb]=imgb
     return new_img
 
-def hamming_distance_orb(des1, des2):
+def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
+    descriptor = cv2.ORB_create()
+    for i in range(k0.shape[0]):
+        if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
+            continue
+        kp0 = cv2.KeyPoint(float(k0[i][0][0]), float(k0[i][0][1]), 9.0)
+        kp0, des0 = descriptor.compute(img0, [kp0])
+
+        kp1 = cv2.KeyPoint(float(k1[i][0][0]), float(k1[i][0][1]), 9.0)
+        kp1, des1 = descriptor.compute(img1, [kp1])
+        if des0 is None or des1 is None:
+            k1[i][0][0] = -99.0
+            k1[i][0][1] = -99.0
+            continue
+        # import pdb ; pdb.set_trace()
+        des_distance = descriptor_hamming_distance(des0, des1)
+        if des_distance > descriptor_threshold:
+            k1[i][0][0] = -99.0
+            k1[i][0][1] = -99.0
+            # print('des_distance:', des_distance)
+        # elif descriptor_threshold == 10:
+        #     print('des_distance:', des_distance)
+
+def descriptor_hamming_distance(des1, des2):
     dist = 0
     for d1, d2 in zip(des1[0].tolist(), des2[0].tolist()):
         res = bin(d1 ^ d2)
@@ -100,11 +182,22 @@ def concat_images_list(im_list):
     new_img = np.vstack(im_list)
     return new_img
 
+def invert_RT(R, T):
+    ''' Invert Rotation (3x3) and Translation (3x1)
+    '''
+    R2 = np.array(R).T
+    T2 = -np.dot(R2, T)
+    return R2, T2
+
+
 def load_kite_config(cfg_file='nav_calib.cfg', num_cams=4):
     cam_matrix = [None] * num_cams
     dist = [None] * num_cams
     cam_rot = [None] * num_cams
     cam_trans = [None] * num_cams
+    imu_rot = [None] * num_cams
+    imu_trans = [None] * num_cams
+
     with io.open(cfg_file) as f:
         config = libconf.load(f)
         # import pdb ; pdb.set_trace()
@@ -121,7 +214,10 @@ def load_kite_config(cfg_file='nav_calib.cfg', num_cams=4):
             dist[cam_id] = dist_coeff
             cam_rot[cam_id] = rot
             cam_trans[cam_id] = trans
-    return cam_matrix, dist, cam_rot, cam_trans
+            imu_rot[cam_id]  = np.array(cam_calib['cam_imu_rot']).reshape(3,3)
+            imu_trans[cam_id]  = np.array(cam_calib['cam_imu_trans']).reshape(3,1)
+            imu_rot[cam_id], imu_trans[cam_id] = invert_RT(imu_rot[cam_id], imu_trans[cam_id])
+    return cam_matrix, dist, cam_rot, cam_trans, imu_rot, imu_trans
 
 
 def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
@@ -145,11 +241,27 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
         trans = np.dot(inv(mtx), trans)
         # mtx = np.dot(scaling_mtx, mtx)
         cam_matrix[cam_id] = mtx
-        # import pdb ; pdb.set_trace()
+        import pdb ; pdb.set_trace()
         dist[cam_id] = None
         cam_rot[cam_id] = rot
         cam_trans[cam_id] = trans
-    return cam_matrix, dist, cam_rot, cam_trans
+    return cam_matrix, dist, cam_rot, cam_trans, None, None
+
+
+
+def split_image_x4(image_path):
+    img_files = glob.glob(image_path + '/*.jpg')
+    img_files = sorted(img_files)
+
+    for img_file in img_files:
+        imgx4 = split_kite_vertical_images(img_file)
+        img_name = img_file.split('/')[-1]
+        for camera_index in range(4):
+            out_path = os.path.join(image_path, 'cam' + str(camera_index))
+            if not os.path.exists(out_path):
+                os.mkdir(out_path)
+            out_path = os.path.join(out_path, img_name)
+            cv2.imwrite(out_path, imgx4[camera_index])
 
 def load_camera_calib(dataset = 'kitti', calib_file=None, num_cams=4):
     if not os.path.exists(calib_file):
@@ -202,8 +314,8 @@ def read_kitti_image(camera_images, num_cams, img_idx=0):
     return imgs_x2
 
 def read_kite_image(camera_images, num_cams=None, img_idx=0):
-    imgs_x4 = pil_split_rotate_kite_record_image(camera_images[img_idx])
-    # imgs_x4 = split_kite_vertical_images(camera_images[img_idx])
+    # imgs_x4 = pil_split_rotate_kite_record_image(camera_images[img_idx])
+    imgs_x4 = split_kite_vertical_images(camera_images[img_idx])
     return imgs_x4
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
@@ -307,7 +419,7 @@ def translateImage3D(img, K_mtx, t):
 def shi_tomasi_corner_detection(img, roi_mask = None, kpts_num=64):
     feature_params = dict( maxCorners = kpts_num,
                        qualityLevel = 0.05,
-                       minDistance = 8,
+                       minDistance = 12,
                        blockSize = 7,
                        mask = roi_mask)
     return cv2.goodFeaturesToTrack(img, **feature_params)
@@ -343,8 +455,11 @@ def epiline(pt, F):
     return ax*nu, bx*nu, cx*nu
 
 
-def rectify_camera_pairs(cam0_img, cam1_img, K0, K1, D0, D1, R, T, img_size = (640, 480), rectify_scale=1):    
+def rectify_camera_pairs(cam0_img, cam1_img, K0, K1, D0, D1, R, T, img_size = (640, 480)):    
     R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(K0, D0, K1, D1, img_size, R, T)
+    print('P1', P1)
+    print('P2', P2)
+
     left_maps = cv2.initUndistortRectifyMap(K0, D0, R1, P1, img_size, cv2.CV_16SC2)
     right_maps = cv2.initUndistortRectifyMap(K1, D1, R2, P2, img_size, cv2.CV_16SC2)
     left_img_remap = cv2.remap(cam0_img, left_maps[0], left_maps[1], cv2.INTER_LANCZOS4)
@@ -374,12 +489,6 @@ def fundamental_matrix(R01, T01, K0, K1):
     return F
 
 
-def invert_RT(R, T):
-    ''' Invert Rotation (3x3) and Translation (3x1)
-    '''
-    R2 = np.array(R).T
-    T2 = -np.dot(R2, T)
-    return R2, T2
 
 def pil_split_rotate_kite_record_image(img_file):
     """Split recorded nav images to 4
@@ -409,10 +518,16 @@ def split_kite_vertical_images(img_file):
     im_width = width
     im_height = height // 4
     splited_images    = 4 * [None]
-    splited_images[0] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 0, im_width, im_height * 1))), cv2.COLOR_RGB2GRAY)
-    splited_images[1] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 1, im_width, im_height * 2))), cv2.COLOR_RGB2GRAY)
-    splited_images[2] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 2, im_width, im_height * 3))), cv2.COLOR_RGB2GRAY)
-    splited_images[3] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 3, im_width, im_height * 4))), cv2.COLOR_RGB2GRAY)
+    # import pdb ; pdb.set_trace()
+    # splited_images[0] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 0, im_width, im_height * 1))), cv2.COLOR_RGB2GRAY)
+    # splited_images[1] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 1, im_width, im_height * 2))), cv2.COLOR_RGB2GRAY)
+    # splited_images[2] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 2, im_width, im_height * 3))), cv2.COLOR_RGB2GRAY)
+    # splited_images[3] = cv2.cvtColor(np.asarray(im.crop((0, im_height * 3, im_width, im_height * 4))), cv2.COLOR_RGB2GRAY)
+    
+    splited_images[0] = np.asarray(im.crop((0, im_height * 0, im_width, im_height * 1)))
+    splited_images[1] = np.asarray(im.crop((0, im_height * 1, im_width, im_height * 2)))
+    splited_images[2] = np.asarray(im.crop((0, im_height * 2, im_width, im_height * 3)))
+    splited_images[3] = np.asarray(im.crop((0, im_height * 3, im_width, im_height * 4)))
     return splited_images
 
 def cv_split_navimage_4(img_file):
@@ -445,7 +560,7 @@ def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (18, 18)):
     lk_params = dict( winSize  = win_size,
                     maxLevel = 5,
                     minEigThreshold=1e-4,
-                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 4, 0.01))
+                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 6, 0.01))
     # perform a forward match
     flow_kpt1, st, err = cv2.calcOpticalFlowPyrLK(curr_im, target_im, flow_kpt0, None, **lk_params)
     # perform a reverse match
@@ -514,7 +629,7 @@ def reprojection_error(points_3x1=None, observations_2x1=None, camera_matrix_3x3
             return None
     projected_points = rotate_and_translate(points_3x1, rotation_vector_3x1, translation_vector_3x1)
     projected_points = np.dot(camera_matrix_3x3, projected_points.T).T
-    # convert the projected points to the P2 homogenous coordinates
+        # convert the projected points to the P2 homogenous coordinates
     projected_points = projected_points[:, :2] / projected_points[:, 2, np.newaxis]
     return projected_points - observations_2x1
 

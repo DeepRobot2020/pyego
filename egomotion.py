@@ -65,7 +65,7 @@ parser.add_argument(
     '--num_features',
     type=int,
     help='Max number of features',
-    default=96)
+    default=128)
 
 parser.add_argument(
     '-num_cam',
@@ -111,15 +111,18 @@ kt_cam = KTPinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
 
 class navcam:
     def __init__(self,  index, stereo_pair_idx, F, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, num_features=64):
-        self.calib_K    = intrinsic_mtx
-        self.calib_d    = intrinsic_dist
+        self.calib_d    = intrinsic_dist[0:4]
+
+        self.calib_K0    = intrinsic_mtx
+        self.calib_K     = correct_kite_camera_matrix(intrinsic_mtx, self.calib_d)
+
         self.calib_R    = extrinsic_rot
         self.calib_R2   = cv2.Rodrigues(extrinsic_rot)[0]
         self.calib_t    = extrinsic_trans
 
         if DATASET == 'kite':  # focal lenght and princial point of kite navcam
             self.focal      = (intrinsic_mtx[0,0] + intrinsic_mtx[1,1]) / 2.0
-            self.pp         = (intrinsic_mtx[:2,2][0], intrinsic_mtx[:2,2][0])    
+            self.pp         = (intrinsic_mtx[:2,2][0], intrinsic_mtx[:2,2][1])    
         else: # focal lenght and princial point of kitti stereo cameras
             self.focal      = kt_cam.fx
             self.pp         = (kt_cam.cx, kt_cam.cy) 
@@ -174,6 +177,7 @@ class navcam:
             return self.mono_cur_R, self.mono_cur_t
         try:
             E, mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+            # import pdb ; pdb.set_trace()
         except:
             return None, None
         try:
@@ -511,52 +515,66 @@ class navcam:
                                         filler = 1)
 
         self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, roi_mask = roi_mask, kpts_num = self.num_features)
-        
+    
+    def front_end_sift_detection_matching(self):
+        if self.curr_img is None:
+            print('Warning: curr_img is None')
+            return
+        roi_mask0 = None
+        roi_mask1 = None
+        if DATASET == 'kite':
+            roi_mask0 = region_of_interest_mask(self.curr_img.shape, 
+                                        KITE_MASK_VERTICES[self.index], 
+                                        filler = 1)
+
+            roi_mask1 = region_of_interest_mask(self.curr_img.shape, 
+                                KITE_MASK_VERTICES[self.stereo_pair_cam.index], 
+                                filler = 1)
+
+        img0 = self.curr_img
+        img1 = self.prev_img
+        img3 = self.curr_stereo_img
+
+        sift = cv2.xfeatures2d.SIFT_create()
+        kp0, des0 = sift.detectAndCompute(img0, roi_mask0)
+        kp1, des1 = sift.detectAndCompute(img1, roi_mask0)
+        kp3, des3 = sift.detectAndCompute(img3, roi_mask1)
+
+        FLANN_INDEX_KDTREE = 1
+        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
+        search_params = dict(checks = 50)
+        flann = cv2.FlannBasedMatcher(index_params, search_params)
+        matches = flann.knnMatch(des1, des2,k=2)
+        good = []
+        for m,n in matches:
+            if m.distance < 0.7*n.distance:
+                good.append(m)
+        if len(good)>MIN_MATCH_COUNT:
+            src_pts = np.float32([ kp1[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
+            dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
+            M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
+            matchesMask = mask.ravel().tolist()
+        else:
+            print( "Not enough matches are found - {}/{}".format(len(good), MIN_MATCH_COUNT))
+            matchesMask = None
+                    
+
     def intra_sparse_optflow(self):
         if self.prev_img is not None:
-            k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=(8, 8))
-            # self.check_optflow_correctness(k0, self.flow_kpt1, k1, self.curr_img, self.prev_img)
+            k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=(16, 16))
             self.flow_kpt1 = k1
             self.flow_kpt2 = k2
+        compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold = 60)
 
-    def check_optflow_correctness(self, k0, k1, p1, img1, img2):
-        kite = []
-        pyego = []
-        brief = cv2.xfeatures2d.BriefDescriptorExtractor_create()
-        n_count = 0
-        for i in range(k0.shape[0]):
-            if k0[i][0][0] < 1.0 or k0[i][0][1] < 1.0:
-                continue
-            kp0 = cv2.KeyPoint(float(k0[i][0][0]), float(k0[i][0][1]), 9.0)
-            kp0, des1 = brief.compute(img1, [kp0])
-
-            kp1 = cv2.KeyPoint(float(k1[i][0][0]), float(k1[i][0][1]), 9.0)
-            kp1, des2 = brief.compute(img2, [kp1])
-
-            kp2 = cv2.KeyPoint(float(p1[i][0][0]), float(p1[i][0][1]), 9.0)
-            kp2, des3 = brief.compute(img2, [kp2])
-
-            if len(kp0) == 0 or len(kp1) == 0 or len(kp2) == 0:
-                continue
-            dist1 = hamming_distance_orb(des1, des2)
-            dist2 = hamming_distance_orb(des1, des3)
-            kite.append(dist1)
-            pyego.append(dist2)     
-            n_count += 1  
-        # import pdb ; pdb.set_trace()
-        kite_err = sum(kite) / n_count
-        pyego_err = sum(pyego) / n_count
-        abs_err = abs(kite_err - pyego_err)
-        print('****keypoints***', 'n_count', n_count, 'kite_brief:', sum(kite) / n_count, 
-                                         'pyego_brief:', sum(pyego) / n_count, 
-                                          abs_err / float(pyego_err))
-        return
         
     def inter_sparse_optflow(self):
         if self.prev_img is not None:
-            k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=(16, 16))
+            k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=(8, 8))
             self.flow_kpt3 = k3
             self.flow_kpt4 = k4
+            # import pdb ; pdb.set_trace()
+        compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold = 50)
+
 
     def filter_intra_keypoints(self, debug=True, out_dir='/tmp'):
         img = None
@@ -571,15 +589,17 @@ class navcam:
                     self.flow_kpt1[ct][0][0] = -10.0
                     self.flow_kpt1[ct][0][1] = -10.0
                     continue
-                if xe > 0.5 or ye > 0.5:
+                if xe > 1.0 or ye > 1.0:
                     self.flow_kpt1[ct][0][0] = -20.0
                     self.flow_kpt1[ct][0][1] = -20.0
                     continue  
+        # import pdb ; pdb.set_trace()
 
     def filter_inter_keypoints(self, debug=True, out_dir='/tmp'):
         img = None
         if self.prev_img is not None:
             ep_err = epi_constraint(self.flow_kpt0, self.flow_kpt3, self.F)
+            # import pdb ; pdb.set_trace()
             for ct, (err, pt1, pt3, pt4) in enumerate(zip(ep_err, self.flow_kpt0, self.flow_kpt3, self.flow_kpt4)):
                 x1, y1 = (pt1[0][0], pt1[0][1])
                 x3, y3 = (pt3[0][0], pt3[0][1])
@@ -590,14 +610,14 @@ class navcam:
                     self.flow_kpt3[ct][0][0] = -10.0
                     self.flow_kpt3[ct][0][1] = -10.0
                     continue
-                if xe > 0.5 or ye > 0.5:
+                if xe > 1.0 or ye > 1.0:
                     self.flow_kpt3[ct][0][0] = -20.0
                     self.flow_kpt3[ct][0][1] = -20.0
                     continue  
-                if err > 0.05:
-                    self.flow_kpt3[ct][0][0] = -30.0
-                    self.flow_kpt3[ct][0][1] = -30.0
-                    continue
+                # if err > 0.05:
+                #     self.flow_kpt3[ct][0][0] = -30.0
+                #     self.flow_kpt3[ct][0][1] = -30.0
+                #     continue
 
 
     def debug_inter_keypoints(self, out_dir='/tmp'):
@@ -762,7 +782,10 @@ class EgoMotion:
         else:
             raise ValueError('Unsupported dataset')
 
-        mtx, dist, rot, trans = load_camera_calib(dataset, calib_file, num_cams)
+        mtx, dist, rot, trans, imu_rot, imu_trans = load_camera_calib(dataset, calib_file, num_cams)
+        self.imu_rot = imu_rot
+        self.imu_trans = imu_trans
+
         # From nav_calib.cfg
         # Camera trans/rot prev camera to camera. Camera 0 is the first in the chain.
         # IMU trans/rot is imu to camera.
@@ -888,7 +911,10 @@ class EgoMotion:
         if self.dataset == 'kitti':
             return read_kitti_image(self.camera_images, self.num_cams, img_idx)
         elif self.dataset == 'kite':
-            return read_kite_image(self.camera_images, self.num_cams, img_idx) 
+            img = read_kite_image(self.camera_images, self.num_cams, img_idx)
+            for i in range(4):
+                img[i] = undistort_kite_image(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
+            return img
         else:
             raise ValueError('read_one_image(): unsupported dataset')
 
@@ -926,8 +952,7 @@ class EgoMotion:
         translation_23 = np.dot(np.dot(self.rot_02, rotation_matrix), self.trans_20)
         translation_23 += np.dot(self.rot_02, translation)
         translation_23 -= np.dot(self.rot_02, self.trans_20)
-        # print('rotation: ', rotation_matrix_23)
-        # print('translation: ', translation_23)
+
         return rotation_matrix_23, translation_23
 
 
@@ -966,21 +991,18 @@ class EgoMotion:
                 flow013_0  = y_meas[y_offset: y_offset + n_obj_013]
                 flow013_1  = y_meas[y_offset+ n_obj_013: y_offset + 2 * n_obj_013]
                 flow013_3  = y_meas[y_offset + 2 * n_obj_013: y_offset + 3 * n_obj_013]
+
+                points_3x1 = points_013
+                observations_2x1 = flow013_1
+                camera_matrix_3x3 = camera_matrix
+                rotation_vector_3x1 = rot_vecs
+                translation_vector_3x1 = trans_vecs
+
                 flow0_err = reprojection_error(points_013, flow013_0, camera_matrix)
-
-                points_3x1=points_013
-                observations_2x1=flow013_1
-                camera_matrix_3x3=camera_matrix
-                rotation_vector_3x1=rot_vecs
-                translation_vector_3x1=trans_vecs
-
                 flow1_err = reprojection_error(points_013, flow013_1, camera_matrix, rot_vecs, trans_vecs)
                 flow3_err = reprojection_error(points_013, flow013_3, stereo_matrix, stereo_rotation, stereo_translation)
 
                 flow013_errs = np.vstack((flow0_err, flow1_err, flow3_err))
-                if c == 2:
-                    import pdb ; pdb.set_trace()
-
                 x0_offset += 3 * n_obj_013
                 y_offset += 3 * n_obj_013
 
@@ -988,6 +1010,7 @@ class EgoMotion:
                     cost_err = flow013_errs
                 else:
                     cost_err = np.vstack([cost_err, flow013_errs])
+                # import pdb ; pdb.set_trace()
 
             if n_obj_01 > 0:
                 points_01  = x0[x0_offset: x0_offset+3*n_obj_01].reshape(-1, 3)
@@ -1005,7 +1028,7 @@ class EgoMotion:
                     cost_err = flow01_errs
                 else:
                     cost_err = np.vstack([cost_err, flow01_errs])
-
+                # import pdb ; pdb.set_trace()
             if cost_err is None:
                 return None
         return cost_err.ravel()
@@ -1040,9 +1063,19 @@ class EgoMotion:
             est_R = mono_R
             est_t = self.prev_scale * mono_t if self.prev_scale is not None else mono_t
 
+        
         num_cams = len(cam_list)
         cam_obs = np.zeros([num_cams, 2], dtype=np.int)
         y_meas = None
+
+        # est_R[0] = 0.
+        # est_R[1] = 0.1
+        # est_R[2] = 0.
+
+        # est_t[0] = 0.01
+        # est_t[1] = 0.01
+        est_t[2] = -0.1
+        
         x0 = np.vstack([est_R, est_t])
 
         json_data = {}
@@ -1121,13 +1154,13 @@ class EgoMotion:
         sparse_A = global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=num_cams) 
 
         ls_pars = dict(jac_sparsity=sparse_A,
-                    max_nfev=5, 
+                    max_nfev=24, 
                     verbose=2,
                     x_scale='jac',
                     jac='2-point',
-                    ftol=0.01, 
-                    xtol=0.01,
-                    gtol=0.01,
+                    ftol=1e-6, 
+                    xtol=1e-6,
+                    gtol=1e-6,
                     method='trf')
 
         t0 = datetime.now()
@@ -1154,7 +1187,8 @@ class EgoMotion:
         t = res.x[3:6]        
         json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
 
-        
+        import pdb ; pdb.set_trace()
+        # plt.plot(err0); plt.plot(err1);plt.show()
         x_offset = 6
         for c in cam_list:
             n_obj_013, n_obj_01 = cam_obs[c]
@@ -1264,7 +1298,9 @@ def _main(args):
             kv.update_keypoints(img_id, use_kite_kpts)
             kv.update_sparse_flow()
             kv.filter_nav_keypoints(debug=True)
-            _, global_tr = kv.global_ego_motion_solver(img_id, cam_list=CAMERA_LIST, debug_json_path='/tmp/pyego')
+
+            _, global_tr = kv.global_ego_motion_solver(img_id, 
+                cam_list=CAMERA_LIST, debug_json_path='/tmp/pyego')
 
         # import pdb ; pdb.set_trace()
         if img_id == 0:

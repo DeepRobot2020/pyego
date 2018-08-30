@@ -1,0 +1,1 @@
+gst-launch-1.0 navcamsrc num-buffers=1 numcam=4 exposure=5000 gain=4 mem-type=0 ! video/x-raw, format=GRAY8, framerate=30/1 ! aeryonnav navigation=true nice-view=true ! video/x-raw, width=960, height=1280, format=I420, framerate=30/1 ! queue ! jpegenc quality=100 idct-method=islow ! filesink name=filesink location=/tmp/sf1.0_0.jpg
