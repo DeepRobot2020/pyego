@@ -65,7 +65,7 @@ parser.add_argument(
     '--num_features',
     type=int,
     help='Max number of features',
-    default=128)
+    default=256)
 
 parser.add_argument(
     '-num_cam',

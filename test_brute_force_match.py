@@ -61,10 +61,38 @@ img0 = imgs_x4_undist[1][0]
 img1 = imgs_x4_undist[0][0]
 img3 = imgs_x4_undist[1][1]
 
+
 sift = cv2.xfeatures2d.SIFT_create()
-kp0, des0 = sift.detectAndCompute(img0, roi_masks[0])
-kp1, des1 = sift.detectAndCompute(img1, roi_masks[0])
-kp3, des3 = sift.detectAndCompute(img3, roi_masks[1])
+feature_params = dict( maxCorners = 256,
+                    qualityLevel = 0.01,
+                    minDistance = 8,
+                    blockSize = 7)
+
+k0 = cv2.goodFeaturesToTrack(img0, mask=roi_masks[0], **feature_params)
+kp0 = []
+for i in range(k0.shape[0]):
+    kp = cv2.KeyPoint(float(k0[i][0][0]), float(k0[i][0][1]), 9.0)
+    kp0.append(kp)
+
+
+k1 = cv2.goodFeaturesToTrack(img1, mask=roi_masks[0], **feature_params)
+kp1 = []
+for i in range(k1.shape[0]):
+    kp = cv2.KeyPoint(float(k1[i][0][0]), float(k1[i][0][1]), 9.0)
+    kp1.append(kp)
+
+
+k3 = cv2.goodFeaturesToTrack(img3, mask=roi_masks[1], **feature_params)
+kp3 = []
+for i in range(k3.shape[0]):
+    kp = cv2.KeyPoint(float(k3[i][0][0]), float(k3[i][0][1]), 9.0)
+    kp3.append(kp)
+
+
+kp0, des0 = sift.compute(img0, kp0)
+kp1, des1 = sift.compute(img1, kp1)
+kp3, des3 = sift.compute(img3, kp3)
+
 
 # match keypoints between 0 and 1
 FLANN_INDEX_KDTREE = 0
@@ -73,38 +101,36 @@ search_params = dict(checks=50)   # or pass empty dictionary
 
 flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-matches_01 = flann.knnMatch(des0, des1, k=2)
-matches_03 = flann.knnMatch(des0, des3, k=2)
+
+# BFMatcher with default params
+bf = cv2.BFMatcher()
+matches_01 = bf.knnMatch(des0,des1, k=2)
+matches_03 = bf.knnMatch(des0,des3, k=2)
+
+# matches_01 = flann.knnMatch(des0, des1, k=2)
+# matches_03 = flann.knnMatch(des0, des3, k=2)
 
 # Need to draw only good matches, so create a mask
-matchesMask_01 = [[0,0] for i in xrange(len(matches_01))]
+matchesMask_01 = [[0,0] for i in range(len(matches_01))]
 # Need to draw only good matches, so create a mask
-matchesMask_03 = [[0,0] for i in xrange(len(matches_03))]
+matchesMask_03 = [[0,0] for i in range(len(matches_03))]
 
 
 cnt_01 = 0
 # ratio test as per Lowe's paper
 for i,(m,n) in enumerate(matches_01):
-    if m.distance < 0.7*n.distance:
+    if m.distance < 0.6*n.distance:
         matchesMask_01[i]= [1,0]
         cnt_01 += 1
 
 cnt_03 = 0
 for i,(m,n) in enumerate(matches_03):
-    if m.distance < 0.7*n.distance:
+    if m.distance < 0.6*n.distance:
         matchesMask_03[i]= [1,0]
         cnt_03 += 1   
 
 print('01_match',cnt_01, '03_match', cnt_03)
 
-draw_params = dict(matchColor = (0,255,0),
-                   singlePointColor = (255,0,0),
-                   matchesMask = matchesMask_01,
-                   flags = 0)
-
-# img3 = cv2.drawMatchesKnn(img0, kp0, img1, kp1, matches_01, None, **draw_params)
-# plt.imshow(img3,),plt.show()
-# import pdb ; pdb.set_trace()
 
 # draw 01 keypoints
 img0_bgr = cv2.cvtColor(img0, cv2.COLOR_GRAY2BGR)
@@ -123,11 +149,9 @@ for i, m in enumerate(matches_01):
     cv2.circle(img1_bgr, (x1, y1), 6, color,2)
 
 
-# draw 03 keypoints
-# img = concat_images(img0_bgr, img1_bgr)
-# plt.imshow(img)
-# plt.show()
-
+img = concat_images(img0_bgr, img1_bgr)
+plt.imshow(img)
+plt.show()
 
 img0_bgr = cv2.cvtColor(img0, cv2.COLOR_GRAY2BGR)
 img3_bgr = cv2.cvtColor(img3, cv2.COLOR_GRAY2BGR)
