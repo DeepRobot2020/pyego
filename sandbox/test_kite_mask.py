@@ -34,6 +34,7 @@ for camera_index in range(4):
     #     plt.imshow(frame_bgr)
     #     plt.show()
 
+    
     for kpt in key_points:
         x, y = (int(kpt[0][0]), int(kpt[0][1]))
         color = tuple(np.random.randint(0,255,3).tolist())

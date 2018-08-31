@@ -1,8 +1,9 @@
-import numpy as np
+
 import glob, math
-import os, io, libconf, copy
+import numpy as np
 import cv2
 from PIL import Image
+import os, io, libconf, copy
 from scipy.sparse import lil_matrix
 from numpy.linalg import inv, norm
 

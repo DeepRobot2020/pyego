@@ -31,14 +31,14 @@ vertices_up_1  = np.array([[(273, 0),   (273, 0),   (273, 8),   (369, 8),   (369
 vertices1 = np.concatenate((vertices_up_1, vertices_down_1, vertices_small_1, vertices_large_1), axis=0)
 
 
-vertices_small_2 = np.array([[ (0, 227), (0, 227), (136, 268), (136, 283), (0, 267)  ]], dtype=np.int32) 
+vertices_small_2 = np.array([[ (0, 227), (0, 227), (124, 280), (105, 302), (0, 267)  ]], dtype=np.int32) 
 vertices_large_2 = np.array([[ (578, 0), (639, 0), (639, 105),  (427, 288), (406, 278)]], dtype=np.int32) 
 vertices_down_2  = np.array([[ (278, 479), (278, 473), (278, 473), (369, 473), (369, 479)]], dtype=np.int32)
 vertices_up_2  = np.array([[(262, 0),   (262, 0),   (262, 8),   (383, 8),   (383, 0)]], dtype=np.int32)
 vertices2 = np.concatenate((vertices_up_2, vertices_down_2, vertices_small_2, vertices_large_2), axis=0)
 
 
-vertices_large_3 = np.array([[ (0, 0), (94, 0), (255, 267), (231, 286), (0, 110)]], dtype=np.int32) 
+vertices_large_3 = np.array([[ (0, 0), (94, 0), (248, 285), (215, 316), (0, 136)]], dtype=np.int32) 
 vertices_small_3 = np.array([[ (500, 266), (500, 266), (639, 228), (639, 261), (515, 290)]], dtype=np.int32) 
 vertices_up_3  = np.array([[ (259, 0), (259, 0), (259, 15),  (389, 15), (389, 0)]], dtype=np.int32)
 vertices3 = np.concatenate((vertices_up_3, vertices_small_3, vertices_large_3), axis=0)
