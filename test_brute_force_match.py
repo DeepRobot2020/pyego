@@ -7,8 +7,8 @@ roi_frame = []
 num_cams = 4
 image_shape = (480, 640)
 
-pose0 = '/home/jzhang/pyego/data/pose0.jpg'
-pose1 = '/home/jzhang/pyego/data/pose1.jpg'
+pose0 = '/home/jzhang/vo_data/jzhang_R80/bench/pose0.jpg'
+pose1 = '/home/jzhang/vo_data/jzhang_R80/bench/pose1.jpg'
 
 CALIB_PATH = '/home/jzhang/vo_data/jzhang_R80/nav_calib.cfg'
 DEBUG_PATH = '/home/jzhang/pyego/output'
@@ -104,8 +104,8 @@ flann = cv2.FlannBasedMatcher(index_params, search_params)
 
 # BFMatcher with default params
 bf = cv2.BFMatcher()
-matches_01 = bf.knnMatch(des0,des1, k=2)
-matches_03 = bf.knnMatch(des0,des3, k=2)
+matches_01 = bf.knnMatch(des0, des1, k=2)
+matches_03 = bf.knnMatch(des0, des3, k=2)
 
 # matches_01 = flann.knnMatch(des0, des1, k=2)
 # matches_03 = flann.knnMatch(des0, des3, k=2)
@@ -161,7 +161,7 @@ for i, m in enumerate(matches_03):
         continue
     pt0 = kp0[m[0].queryIdx]
     pt1 = kp3[m[0].trainIdx]
-    
+
     x0, y0 = (int(pt0.pt[0]), int(pt0.pt[1]))
     x1, y1 = (int(pt1.pt[0]), int(pt1.pt[1]))   
     color = tuple(np.random.randint(0,255,3).tolist())

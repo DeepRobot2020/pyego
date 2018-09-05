@@ -10,8 +10,10 @@ KITE_KPTS_PATH = '/tmp/kite/'
 
 # configs for KITI dataset
 DATASET = 'kite'
-INPUT_IMAGE_PATH='/home/jzhang/vo_data/jzhang_R80/bench'
-INPUT_CALIB_PATH='/home/jzhang/vo_data/jzhang_R80/nav_calib.cfg'
+KITE_VIDEO_FORMAT = '2x2' # or 4x1
+INPUT_IMAGE_PATH ='/home/jzhang/vo_data/jzhang_R80/AeryonYard/00001'
+INPUT_CALIB_PATH ='/home/jzhang/vo_data/jzhang_R80/nav_calib.cfg'
+ACS_TO_CAMEAR0_ROTATION_ANGLE = 45 # 45 degree
 
 vertices_large_0 = np.array([[ (557, 0),   (639, 0),   (639, 105), (436, 293), (386, 272)]], dtype=np.int32)
 vertices_small_0 = np.array([[ (0, 247),   (0, 247),   (134, 264), (134, 305), (0, 277)  ]], dtype=np.int32) 
