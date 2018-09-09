@@ -111,20 +111,21 @@ kt_cam = KTPinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
 
 class navcam:
     def __init__(self,  index, stereo_pair_idx, F, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, num_features=64):
-        self.calib_d    = intrinsic_dist[0:4]
-        self.calib_K0    = intrinsic_mtx
-        intrinsic_mtx = correct_kite_camera_matrix(intrinsic_mtx, self.calib_d)        
-        self.calib_K = intrinsic_mtx
-        self.calib_R    = extrinsic_rot
-        self.calib_R2   = cv2.Rodrigues(extrinsic_rot)[0]
-        self.calib_t    = extrinsic_trans
+        self.calib_d   = intrinsic_dist[0:4]
+        self.calib_K0  = intrinsic_mtx
+        self.calib_R   = extrinsic_rot
+        self.calib_R2  = cv2.Rodrigues(extrinsic_rot)[0]
+        self.calib_t   = extrinsic_trans
 
         if DATASET == 'kite':  # focal lenght and princial point of kite navcam
-            self.focal      = (intrinsic_mtx[0,0] + intrinsic_mtx[1,1]) / 2.0
-            self.pp         = (intrinsic_mtx[:2,2][0], intrinsic_mtx[:2,2][1])    
+            self.calib_K   = correct_kite_camera_matrix(intrinsic_mtx, self.calib_d)
+            self.focal      = (self.calib_K[0,0] + self.calib_K[1,1]) / 2.0
+            self.pp         = (self.calib_K[:2,2][0], self.calib_K[:2,2][1])    
         else: # focal lenght and princial point of kitti stereo cameras
             self.focal      = kt_cam.fx
             self.pp         = (kt_cam.cx, kt_cam.cy) 
+            self.calib_K    = intrinsic_mtx
+
 
         self.num_features = num_features
         self.flow_kpt0 = None
@@ -176,7 +177,6 @@ class navcam:
             return self.mono_cur_R, self.mono_cur_t
         try:
             E, mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.RANSAC, prob=0.999, threshold=1e-2)
-            # import pdb ; pdb.set_trace()
         except:
             return None, None
         try:
@@ -518,7 +518,6 @@ class navcam:
                                                     min_distance = SHI_TOMASI_MIN_DISTANCE, 
                                                     roi_mask = roi_mask, 
                                                     kpts_num = self.num_features)
-        shi_tomasi_corner_detection(self.curr_img, kpts_num = self.num_features)
 
     def front_end_sift_detection_matching(self):
         if self.curr_img is None:
@@ -732,12 +731,12 @@ class navcam:
 
             # if len(flow_intra_inter0) > 8:
             #     M, mask01 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter1), cv2.RANSAC, 0.5)
-                # M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
-                # mask_flow013 = mask01 & mask03
-                # mask_flow013 = mask01
-                # flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
-                # flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
-                # flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
+            #     M, mask03 = cv2.findHomography(np.array(flow_intra_inter0), np.array(flow_intra_inter3), cv2.RANSAC, 0.5)
+            #     mask_flow013 = mask01 & mask03
+            #     mask_flow013 = mask01
+            #     flow_intra_inter0 = [flow_intra_inter0[i] for i in range(len(flow_intra_inter0)) if mask_flow013[i] == 1]
+            #     flow_intra_inter1 = [flow_intra_inter1[i] for i in range(len(flow_intra_inter1)) if mask_flow013[i] == 1]
+            #     flow_intra_inter3 = [flow_intra_inter3[i] for i in range(len(flow_intra_inter3)) if mask_flow013[i] == 1]
 
             # if len(flow_intra0) > 8:
             #     M, mask_flow01 = cv2.findHomography(np.array(flow_intra0), np.array(flow_intra1), cv2.RANSAC, 0.5)
@@ -927,7 +926,7 @@ class EgoMotion:
                 self.navcams[i].intra_sparse_optflow()
                 self.navcams[i].inter_sparse_optflow()
 
-    def filter_nav_keypoints(self, debug=False):
+    def filter_keypoints_outliers(self, debug=False):
         for c in range(self.num_cams):
             self.navcams[c].filter_keypoints(debug=debug)
 
@@ -946,7 +945,7 @@ class EgoMotion:
                 img[i] = undistort_kite_image(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
             return img
         else:
-            raise ValueError('read_one_image(): unsupported dataset')
+            raise ValueError('read_one_image failed: unsupported dataset')
 
     def local_ego_motion_solver(self, cam_list=[0]):
         for c in cam_list:
@@ -1085,7 +1084,7 @@ class EgoMotion:
             return None, None
         # Estimate each camera's local egomotion by 5 point algorithm   
         rotation_initial, translation_initial, camera_index, rot_list, trans_list = self.get_initial_egomotion_from_mono_estimation(cam_list)
-        translation_initial /= 4.0
+        # translation_initial /= 4.0
 
         if camera_index == -1:
             print('error: no initial estimation from 5 point are avalaible')
@@ -1180,7 +1179,7 @@ class EgoMotion:
 
         ls_pars = dict(jac_sparsity=sparse_A,
                     max_nfev=24, 
-                    verbose=2,
+                    verbose=0,
                     x_scale='jac',
                     jac='2-point',
                     ftol=1e-6, 
@@ -1243,7 +1242,7 @@ class EgoMotion:
 
         avg_least_square_conf = self.least_square_conf / self.img_idx
         t = t.reshape(3,1)
-
+        # import pdb; pdb.set_trace()
         acs_rot, acs_trans = transform_egomtion_from_frame_a_to_b(R, t, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
         acs_rot_aa = cv2.Rodrigues(acs_rot)[0]
 
@@ -1251,10 +1250,9 @@ class EgoMotion:
               'rotation %.2f %.2f %.2f' % (acs_rot_aa[0], acs_rot_aa[1], acs_rot_aa[2]),  
               'translation %.2f %.2f %.2f'  % (acs_trans[0], acs_trans[1], acs_trans[2]), 
               'conf', norm(err1), avg_least_square_conf)
-        
-        # import pdb; pdb.set_trace()      
+           
         pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
-        # import pdb ; pdb.set_trace()
+
         return pose_R, pose_t 
         
 def _main(args):
@@ -1299,11 +1297,13 @@ def _main(args):
 
     x, y, z = 0., 0., 0.
     global_tr = [0, 0, 0]
+
     for img_id in range(kv.num_imgs):
         if dataset == 'kitti':
             kv.load_kitti_gt(img_id)
             
         camera_images = kv.read_one_image(img_id)
+
         kv.upload_images(camera_images)
         
         if external_json_pose:
@@ -1327,7 +1327,7 @@ def _main(args):
         else:
             kv.update_keypoints(img_id, use_kite_kpts)
             kv.update_sparse_flow()
-            kv.filter_nav_keypoints(debug=True)
+            kv.filter_keypoints_outliers(debug=False)
 
             _, global_tr = kv.global_ego_motion_solver(img_id, 
                 cam_list=CAMERA_LIST, debug_json_path='/tmp/pyego')
