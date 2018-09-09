@@ -1,7 +1,11 @@
 import numpy as np
 CAMERA_LIST = [0, 1]
 KITE_KPTS_PATH = '/tmp/kite/'
-
+INTRA_OPT_FLOW_DES_THRESHOLD = 50
+INTER_OPT_FLOW_DES_THRESHOLD = 50
+SHI_TOMASI_MIN_DISTANCE  = 8
+SHI_TOMASI_QUALITY_LEVEL = 0.01
+MAX_NUM_KEYPOINTS = 128 
 
 # configs for KITTI dataset
 # DATASET = 'kitti' 
@@ -12,8 +16,8 @@ KITE_KPTS_PATH = '/tmp/kite/'
 DATASET = 'kite'
 KITE_VIDEO_FORMAT = '2x2' # or 4x1
 INPUT_IMAGE_PATH ='/home/jzhang/vo_data/jzhang_R80/AeryonYard/00001'
-INPUT_CALIB_PATH ='/home/jzhang/vo_data/jzhang_R80/nav_calib.cfg'
-ACS_TO_CAMEAR0_ROTATION_ANGLE = 45 # 45 degree
+INPUT_CALIB_PATH ='/home/jzhang/vo_data/jzhang_R80/nav_calib_imu_corrected.cfg'
+ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
 
 vertices_large_0 = np.array([[ (557, 0),   (639, 0),   (639, 105), (436, 293), (386, 272)]], dtype=np.int32)
 vertices_small_0 = np.array([[ (0, 247),   (0, 247),   (134, 264), (134, 305), (0, 277)  ]], dtype=np.int32) 

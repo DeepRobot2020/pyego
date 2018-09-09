@@ -115,12 +115,11 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
              0.0, new_f[1], new_c[1], 
              0.0, 0.0, 1.0]).reshape(3, 3)
 
-    import pdb; pdb.set_trace()
-    
+    print(new_K)
     return new_K
 
 def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
-    return kiteEstimateNewCameraMatrixForUndistortRectify(K, D)
+    return kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
     # return cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, dim, np.eye(3), balance=balance)
 
 def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
@@ -201,9 +200,6 @@ def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
         if des_distance > descriptor_threshold:
             k1[i][0][0] = -99.0
             k1[i][0][1] = -99.0
-            # print('des_distance:', des_distance)
-        # elif descriptor_threshold == 10:
-        #     print('des_distance:', des_distance)
 
 def descriptor_hamming_distance(des1, des2):
     dist = 0
@@ -295,7 +291,7 @@ def load_kitti_config(cfg_file='calib.txt',  num_cams=4):
         # mtx = np.dot(scaling_mtx, mtx)
         cam_matrix[cam_id] = mtx
         # import pdb ; pdb.set_trace()
-        dist[cam_id] = None
+        dist[cam_id] = np.zeros(6)
         cam_rot[cam_id] = rot
         cam_trans[cam_id] = trans
         imu_rot[cam_id]  = np.eye(3)
@@ -471,12 +467,12 @@ def translateImage3D(img, K_mtx, t):
     warp = cv2.warpPerspective(img, M, (640, 481))
     return warp, M
     
-def shi_tomasi_corner_detection(img, roi_mask = None, kpts_num=64):
+def shi_tomasi_corner_detection(img, quality_level = 0.01, min_distance = 8, roi_mask = None, kpts_num=64):
     feature_params = dict( maxCorners = kpts_num,
-                       qualityLevel = 0.01,
-                       minDistance = 8,
-                       blockSize = 7,
-                       mask = roi_mask)
+                        qualityLevel = quality_level,
+                        minDistance = min_distance,
+                        blockSize = 7,
+                        mask = roi_mask)
     return cv2.goodFeaturesToTrack(img, **feature_params)
 
 def epi_constraint(pts1, pts2, F):
@@ -511,9 +507,7 @@ def epiline(pt, F):
 
 
 def rectify_camera_pairs(cam0_img, cam1_img, K0, K1, D0, D1, R, T, img_size = (640, 480)):    
-    R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(K0, D0, K1, D1, img_size, R, T)
-    print('P1', P1)
-    print('P2', P2)
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(K0, D0, K1, D1, img_size, R, T)
 
     left_maps = cv2.initUndistortRectifyMap(K0, D0, R1, P1, img_size, cv2.CV_16SC2)
     right_maps = cv2.initUndistortRectifyMap(K1, D1, R2, P2, img_size, cv2.CV_16SC2)
@@ -561,7 +555,7 @@ def pil_split_rotate_kite_record_image(img_file):
         splited_images[i] =cv2.cvtColor(splited_images[i], cv2.COLOR_RGB2GRAY)
     return splited_images
 
-def split_kite_vertical_images(img_file):
+def split_kite_vertical_images(img_file, num_cams=4):
     """Split recorded nav images to 4
     # 0 
     # 1 
@@ -571,12 +565,10 @@ def split_kite_vertical_images(img_file):
     im = Image.open(img_file)
     width, height = im.size
     im_width = width
-    im_height = height // 4
-    splited_images    = 4 * [None]
-    splited_images[0] = np.asarray(im.crop((0, im_height * 0, im_width, im_height * 1)))
-    splited_images[1] = np.asarray(im.crop((0, im_height * 1, im_width, im_height * 2)))
-    splited_images[2] = np.asarray(im.crop((0, im_height * 2, im_width, im_height * 3)))
-    splited_images[3] = np.asarray(im.crop((0, im_height * 3, im_width, im_height * 4)))
+    im_height = height // num_cams
+    splited_images    = num_cams * [None]
+    for i in range(num_cams):
+        splited_images[i] = np.asarray(im.crop((0, im_height * i, im_width, im_height * (i + 1))))
     return splited_images
 
 def cv_split_navimage_4(img_file):
@@ -823,16 +815,7 @@ def global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=4, n_poses=1):
         m_offset += n_obs_j * 2
         n_offset_i = (n_obs_i + n_obs_j) * 3
     return A
-    
-def transform_egomtion_from_frame_a_to_b(egomotion_rotation_a, egomotion_translation_a, rotation_a_to_b, translation_a_to_b):
-    '''Transform egomotion from frame a to b
-    '''
-    egomotion_rotation_b = np.dot(rotation_a_to_b, np.dot(egomotion_rotation_a, rotation_a_to_b.T))
-    # Compute the translation
-    egomotion_translation_b =  np.dot((np.eye(3) - egomotion_rotation_b), translation_a_to_b)
-    egomotion_translation_b +=  rotation_a_to_b * egomotion_rotation_a
-    return egomotion_rotation_b, egomotion_translation_a
-    
+
 def compute_acs_to_camera0_transformation(acs_to_imu_rotation_angle=0, rotation_imu_to_cam0=np.eye(3), translation_imu_to_camera0=np.zeros([3, 1])):
     '''[Compute the rotation and translation from ACS (NED)frame to camera0 frame ]
     
@@ -850,6 +833,16 @@ def compute_acs_to_camera0_transformation(acs_to_imu_rotation_angle=0, rotation_
     rotation_acs_to_cam0 = np.dot(rotation_imu_to_cam0, rotation_acs_to_imu)
 
     translation_acs_to_cam0 = translation_imu_to_camera0
-    # import pdb ; pdb.set_trace()
     return rotation_acs_to_cam0, translation_acs_to_cam0
+
+def transform_egomtion_from_frame_a_to_b(egomotion_rotation_a, egomotion_translation_a, rotation_a_to_b, translation_a_to_b):
+    '''Transform egomotion from frame a to b
+    '''
+    egomotion_rotation_b = np.dot(rotation_a_to_b, np.dot(egomotion_rotation_a, rotation_a_to_b.T))
+    # Compute the translation
+    egomotion_translation_b =  np.dot((np.eye(3) - egomotion_rotation_b), translation_a_to_b)
+    egomotion_translation_b +=  np.dot(rotation_a_to_b, egomotion_translation_a)
+    return egomotion_rotation_b, egomotion_translation_b
+    
+
 

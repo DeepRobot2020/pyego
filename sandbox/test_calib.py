@@ -4,20 +4,18 @@ from utils import *
 from cfg import *
 
 
-def split_image_x4(IMG_PATH):
-    img_files = glob.glob(IMG_PATH + '/*.jpg')
-    img_files = sorted(img_files)
+def split_image_x4(img_file):
+    imgx4 = split_kite_vertical_images(img_file)
+    img_name = img_file.split('/')[-1]
+    for camera_index in range(4):
+        import pdb ; pdb.set_trace()
+        out_path = os.path.join(IMG_PATH, 'cam' + str(camera_index))
+        if not os.path.exists(out_path):
+            os.mkdirs(out_path)
+        out_path = os.path.join(out_path, img_name)
+        cv2.imwrite(out_path, imgx4[camera_index])
 
-    for img_file in img_files:
-        imgx4 = pil_split_rotate_kite_record_image(img_file)
-        img_name = img_file.split('/')[-1]
-        for camera_index in range(4):
-            out_path = os.path.join(IMG_PATH, 'cam' + str(camera_index))
-            out_path = os.path.join(out_path, img_name)
-            cv2.imwrite(out_path, imgx4[camera_index])
-
-
-split_image_x4('/home/jzhang/pyego/data/test.jpg')
+split_image_x4('/home/jzhang/pyego/data/dot_test_2.jpg')
 
 import pdb; pdb.set_trace()
 
