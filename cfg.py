@@ -35,9 +35,9 @@ LS_PARMS = dict(max_nfev=5,
                 method='trf')
 
 # configs for KITTI dataset
-# DATASET = 'kitti' 
-# INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
-# INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
+DATASET = 'kitti' 
+INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
+INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
 
 # configs for KITI dataset
 DATASET = 'kite'
