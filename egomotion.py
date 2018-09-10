@@ -110,7 +110,7 @@ kt_cam = KTPinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
 
 
 class navcam:
-    def __init__(self,  index, stereo_pair_idx, F, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, num_features=64):
+    def __init__(self,  index, stereo_pair_idx, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, num_features=64):
         self.calib_d    = intrinsic_dist[0:4]
         self.calib_K0    = intrinsic_mtx
         intrinsic_mtx = correct_kite_camera_matrix(intrinsic_mtx, self.calib_d)        
@@ -162,7 +162,8 @@ class navcam:
         self.index   = index
 
         self.img_idx = None
-        self.F = F
+        self.F = None 
+    
         self.proj_mtx = None
         self.least_square_conf = None
         
@@ -175,12 +176,15 @@ class navcam:
         if self.intra0.shape[0] < 5:
             return self.mono_cur_R, self.mono_cur_t
         try:
-            E, mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.RANSAC, prob=0.999, threshold=1e-2)
-            # import pdb ; pdb.set_trace()
+            E, e_mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.RANSAC, prob=FIVE_POINTS_ALGO_PROB_THRESHOLD, threshold=FIVE_POINTS_ALGO_EPI_THRESHOLD)
         except:
             return None, None
         try:
-            _, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, focal=self.focal, pp = self.pp)
+            # E, e_mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.RANSAC, threshold=1e-2)
+            _, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, mask = e_mask, focal=self.focal, pp = self.pp)
+            # rvec = cv2.Rodrigues(R)[0]
+            # print(rvec)
+            # import pdb ; pdb.set_trace()
         except:
             # import pdb; pdb.set_trace()
             return None, None
@@ -568,7 +572,7 @@ class navcam:
             k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=(16, 16))
             self.flow_kpt1 = k1
             self.flow_kpt2 = k2
-        compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DES_THRESHOLD)
+        compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
 
         
     def inter_sparse_optflow(self):
@@ -576,7 +580,7 @@ class navcam:
             k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=(8, 8))
             self.flow_kpt3 = k3
             self.flow_kpt4 = k4
-        compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DES_THRESHOLD)
+        compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
 
 
     def filter_intra_keypoints(self, debug=True, out_dir='/tmp'):
@@ -592,7 +596,7 @@ class navcam:
                     self.flow_kpt1[ct][0][0] = -10.0
                     self.flow_kpt1[ct][0][1] = -10.0
                     continue
-                if xe > 1.0 or ye > 1.0:
+                if xe > INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD or ye > INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD:
                     self.flow_kpt1[ct][0][0] = -20.0
                     self.flow_kpt1[ct][0][1] = -20.0
                     continue  
@@ -601,6 +605,13 @@ class navcam:
     def filter_inter_keypoints(self, debug=True, out_dir='/tmp'):
         img = None
         if self.prev_img is not None:
+            if self.F is None:
+                K0 = self.calib_K
+                K1 = self.stereo_pair_cam.calib_K
+                rot = self.calib_R
+                trans = self.calib_t
+                self.F = fundamental_matrix(rot, trans, K0, K1)
+
             ep_err = epi_constraint(self.flow_kpt0, self.flow_kpt3, self.F)
             # import pdb ; pdb.set_trace()
             for ct, (err, pt1, pt3, pt4) in enumerate(zip(ep_err, self.flow_kpt0, self.flow_kpt3, self.flow_kpt4)):
@@ -613,11 +624,11 @@ class navcam:
                     self.flow_kpt3[ct][0][0] = -10.0
                     self.flow_kpt3[ct][0][1] = -10.0
                     continue
-                if xe > 1.0 or ye > 1.0:
+                if xe > INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD or ye > INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD:
                     self.flow_kpt3[ct][0][0] = -20.0
                     self.flow_kpt3[ct][0][1] = -20.0
                     continue  
-                if err > 0.05:
+                if abs(err) > INTER_OPT_FLOW_EPILINE_ERROR_THRESHOLD:
                     self.flow_kpt3[ct][0][0] = -30.0
                     self.flow_kpt3[ct][0][1] = -30.0
                     continue
@@ -699,17 +710,19 @@ class navcam:
             trans_01 = self.calib_t
             points013, terr0, terr1 = triangulate_3d_points(np.array(self.flow_kpt0).reshape(-1,2), 
                                                             np.array(self.flow_kpt3).reshape(-1,2), 
-                                                            K0, K1, 
-                                                            rot_01, trans_01)
+                                                            K0, 
+                                                            K1, 
+                                                            rot_01, 
+                                                            trans_01)
 
-            # import pdb ; pdb.set_trace()
+            import pdb ; pdb.set_trace()
             num_flow_013 = 0
             for kp0, kp1, kp3, wp in zip(self.flow_kpt0, self.flow_kpt1, self.flow_kpt3, points013):
                 # for kite system, the cam0 is a logical leftcam not a physicall left cam, so
                 # the feature points could behind the camera 
-                if wp[2] < 0:# and DATASET == 'kitti':
-                    # print('warning: ignore world points behind camera')
-                    continue
+                # if wp[2] < 0:# and DATASET == 'kitti':
+                #     # print('warning: ignore world points behind camera')
+                #     continue
                 x0, y0 = kp0[0][0], kp0[0][1]
                 x1, y1 = kp1[0][0], kp1[0][1]
                 x3, y3 = kp3[0][0], kp3[0][1]
@@ -859,8 +872,7 @@ class EgoMotion:
         # Compute the fundamental matrix
         for left in range(self.num_cams):
             right = self.STEREOCONFG[left]
-            F_mtx = fundamental_matrix(rot[left], trans[left], mtx[left], mtx[right])
-            self.navcams.append(navcam(left, self.STEREOCONFG[left], F_mtx, mtx[left], dist[left], rot[left], trans[left], self.num_features))
+            self.navcams.append(navcam(left, self.STEREOCONFG[left], mtx[left], dist[left], rot[left], trans[left], self.num_features))
         # Set each camera's stereo config
         for left in range(self.num_cams):
             self.navcams[left].set_stereo_pair(self.navcams[self.STEREOCONFG[left]])
@@ -942,8 +954,9 @@ class EgoMotion:
         elif self.dataset == 'kite':
             img = read_kite_image(self.camera_images, self.num_cams, KITE_VIDEO_FORMAT, img_idx)
             # import pdb; pdb.set_trace()
-            for i in range(4):
-                img[i] = undistort_kite_image(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
+            if KITE_UNDISTORION_NEEDED:
+                for i in range(4):
+                    img[i] = undistort_kite_image(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
             return img
         else:
             raise ValueError('read_one_image(): unsupported dataset')
@@ -1085,7 +1098,7 @@ class EgoMotion:
             return None, None
         # Estimate each camera's local egomotion by 5 point algorithm   
         rotation_initial, translation_initial, camera_index, rot_list, trans_list = self.get_initial_egomotion_from_mono_estimation(cam_list)
-        translation_initial /= 4.0
+        translation_initial /= 2.0
 
         if camera_index == -1:
             print('error: no initial estimation from 5 point are avalaible')
@@ -1178,21 +1191,11 @@ class EgoMotion:
 
         sparse_A = global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=num_cams) 
 
-        ls_pars = dict(jac_sparsity=sparse_A,
-                    max_nfev=24, 
-                    verbose=2,
-                    x_scale='jac',
-                    jac='2-point',
-                    ftol=1e-6, 
-                    xtol=1e-6,
-                    gtol=1e-6,
-                    method='trf')
-
         t0 = datetime.now()
         res = None
         err0 = self.global_fun(x0, cam_obs, y_meas, cam_list)
         try:
-            res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), **ls_pars)
+            res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), jac_sparsity=sparse_A, **LS_PARMS)
         except:
             import pdb; pdb.set_trace()
         
@@ -1211,7 +1214,8 @@ class EgoMotion:
         R = cv2.Rodrigues(res.x[0:3])[0]
         t = res.x[3:6]        
         json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
-
+        
+        import pdb; pdb.set_trace()
         # plt.plot(err0); plt.plot(err1);plt.show()
         x_offset = 6
         for c in cam_list:
@@ -1325,12 +1329,17 @@ def _main(args):
                 print('warning, no ' + frame_name + ' estimation from json')
                 global_tr = kv.pose_t
         else:
+            t0 = datetime.now()
             kv.update_keypoints(img_id, use_kite_kpts)
             kv.update_sparse_flow()
-            kv.filter_nav_keypoints(debug=True)
-
+            kv.filter_nav_keypoints(debug=DEBUG_KEYPOINTS)
+            t1 = datetime.now()
             _, global_tr = kv.global_ego_motion_solver(img_id, 
                 cam_list=CAMERA_LIST, debug_json_path='/tmp/pyego')
+            t2 = datetime.now()
+            delay_front_end = t1 - t0
+            delay_back_end = t2 - t1
+            print(delay_front_end.microseconds / 1000.0, delay_back_end.microseconds/ 1000.0)
 
         if img_id == 0:
             x, y, z = 0, 0, 0
@@ -1359,8 +1368,8 @@ def _main(args):
             img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (320, 240))
             img_bgr.append(img)
         img_ = concat_images_list(img_bgr)
-      
         cv2.imshow('Navigation cameras', img_)
+
         cv2.imshow('Trajectory' + seq, traj)
         cv2.waitKey(1)
     traj_name = 'seq_' + seq + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '.png'
