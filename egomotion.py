@@ -180,19 +180,9 @@ class navcam:
             invK = inv(K0)
             E, e_mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.LMEDS, prob=0.99, threshold=1e-2)
             nin, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, mask = e_mask, focal=self.focal, pp = self.pp)
-#             t[0] = -0.219
-#             t[1] = 0.237
-#             t[2] = 1.091
-
-# kpt0 = np.array([self.intra0[1][0], self.intra0[1][1], 1.0]).reshape(3,1)
-# K0.dot(R.dot(invK.dot(kpt0)) + t)
-
-#             rvec = cv2.Rodrigues(R)[0]
-#             print(nin, rvec)
-            # if nin == 0:
-            import pdb ; pdb.set_trace()
+            # import pdb ; pdb.set_trace()
         except:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             return None, None
 
         if self.img_idx == 1:
@@ -577,7 +567,7 @@ class navcam:
             k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=INTRA_OPTFLOW_WIN_SIZE)
             self.flow_kpt1 = k1
             self.flow_kpt2 = k2
-        # compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+        compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
 
         
     def inter_sparse_optflow(self):
@@ -585,7 +575,7 @@ class navcam:
             k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=INTER_OPTFLOW_WIN_SIZE)
             self.flow_kpt3 = k3
             self.flow_kpt4 = k4
-        # compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+        compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
 
 
     def filter_intra_keypoints(self, debug=True, out_dir='/tmp'):
@@ -1002,8 +992,9 @@ class EgoMotion:
         self.prev_scale = norm(t) if norm(t) > 0.01 else self.prev_scale
         if norm(t) > 10:
             return self.pose_R, self.pose_t
+        # C(k) = C(k-1) * T(k, k-1)
         self.pose_t = self.pose_t + self.pose_R.dot(t) 
-        self.pose_R = R.dot(self.pose_R)
+        self.pose_R = self.pose_R.dot(R)
         return self.pose_R, self.pose_t
 
     def get_egomotion(self):
@@ -1347,8 +1338,6 @@ def _main(args):
         if dataset == 'kitti':
             kv.load_kitti_gt(img_id)
 
-        if img_id % 5 != 0:
-            continue  
         camera_images = kv.read_one_image(img_id)
 
         kv.upload_images(camera_images)
