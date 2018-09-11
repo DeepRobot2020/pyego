@@ -1,19 +1,24 @@
 import numpy as np
 
-CAMERA_LIST = [0, 1]
+CAMERA_LIST = [0]
 KITE_KPTS_PATH = '/tmp/kite/'
 
 
 SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
-MAX_NUM_KEYPOINTS = 128 
+MAX_NUM_KEYPOINTS = 96 
 SCIPY_LS_VERBOSE_LEVEL = 0
 # 
 
-FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.999
+FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
 FIVE_POINTS_ALGO_EPI_THRESHOLD = 1e-2
 
 DEBUG_KEYPOINTS = True
+
+
+# Optflow 
+INTRA_OPTFLOW_WIN_SIZE = (16, 16)
+INTER_OPTFLOW_WIN_SIZE = (16, 16)
 
 # Constans control the egomotion feature erros
 INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD = 30
@@ -40,12 +45,12 @@ INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
 INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
 
 # configs for KITI dataset
-DATASET = 'kite'
-KITE_VIDEO_FORMAT = '2x2' # or 4x1
-INPUT_IMAGE_PATH ='/home/jzhang/vo_data/SN51/20180907F04_SR80_000010051_NAV_0001'
-INPUT_CALIB_PATH ='/home/jzhang/vo_data/SN51/nav_calib_imu_corrected.cfg'
-ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
-KITE_UNDISTORION_NEEDED = False
+# DATASET = 'kite'
+# KITE_VIDEO_FORMAT = '2x2' # or 4x1
+# INPUT_IMAGE_PATH ='/home/jzhang/vo_data/SN51/20180907F04_SR80_000010051_NAV_0001'
+# INPUT_CALIB_PATH ='/home/jzhang/vo_data/SN51/nav_calib_imu_corrected.cfg'
+# ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
+# KITE_UNDISTORION_NEEDED = False
 
 
 
