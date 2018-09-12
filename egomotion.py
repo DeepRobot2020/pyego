@@ -177,7 +177,6 @@ class navcam:
             return self.mono_cur_R, self.mono_cur_t
         try:
             K0 = self.calib_K
-            invK = inv(K0)
             E, e_mask = cv2.findEssentialMat(self.intra0, self.intra1, focal=self.focal, pp=self.pp, method=cv2.LMEDS, prob=0.99, threshold=1e-2)
             nin, R, t, mask = cv2.recoverPose(E, self.intra0, self.intra1, mask = e_mask, focal=self.focal, pp = self.pp)
             # import pdb ; pdb.set_trace()
@@ -206,6 +205,7 @@ class navcam:
         rot_vecs   = x0[0:3]
         trans_vecs = x0[3:6]
         points_013 = x0[6: 6 + 3 * n_kpts_013].reshape(-1, 3)
+
         flow013_0  = y_meas[0: 1 * n_kpts_013]
         flow013_1  = y_meas[1 * n_kpts_013 : 2 * n_kpts_013]
         flow013_3  = y_meas[2 * n_kpts_013 : 3 * n_kpts_013]
@@ -567,18 +567,18 @@ class navcam:
             k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=INTRA_OPTFLOW_WIN_SIZE)
             self.flow_kpt1 = k1
             self.flow_kpt2 = k2
-        compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+            compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+            self.filter_intra_keypoints()
 
-        
     def inter_sparse_optflow(self):
-        if self.prev_img is not None:
-            k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=INTER_OPTFLOW_WIN_SIZE)
-            self.flow_kpt3 = k3
-            self.flow_kpt4 = k4
+        k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=INTER_OPTFLOW_WIN_SIZE)
+        self.flow_kpt3 = k3
+        self.flow_kpt4 = k4
         compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+        self.filter_inter_keypoints()
 
 
-    def filter_intra_keypoints(self, debug=True, out_dir='/tmp'):
+    def filter_intra_keypoints(self):
         img = None
         if self.prev_img is not None:
             for ct, (pt1, pt2, pt3) in enumerate(zip(self.flow_kpt0, self.flow_kpt1, self.flow_kpt2)):
@@ -596,8 +596,7 @@ class navcam:
                     self.flow_kpt1[ct][0][1] = -20.0
                     continue  
         # import pdb ; pdb.set_trace()
-
-    def filter_inter_keypoints(self, debug=True, out_dir='/tmp'):
+    def filter_inter_keypoints(self):
         img = None
         if self.prev_img is not None:
             if self.F is None:
@@ -684,10 +683,7 @@ class navcam:
 
 
     def filter_keypoints(self, debug=False, out_dir='/home/jzhang/Pictures/tmp/', max_inter_pts = 100):
-        if self.prev_img is not None:
-            self.filter_intra_keypoints(debug=debug, out_dir=out_dir)
-            self.filter_inter_keypoints(debug=debug, out_dir=out_dir)
-            
+        if self.prev_img is not None:            
             flow_intra_inter0 = []
             flow_intra_inter1 = []
             flow_intra_inter3 = []
@@ -952,12 +948,15 @@ class EgoMotion:
             for i in range(self.num_cams):
                 self.navcams[i].keypoint_detection()
 
-    def update_sparse_flow(self):
+    def update_inter_optflow(self):
+        for i in range(self.num_cams):
+            self.navcams[i].inter_sparse_optflow()
+
+    def update_intra_optflow(self):
         if self.img_idx > 0:
             for i in range(self.num_cams):
                 self.navcams[i].intra_sparse_optflow()
-                self.navcams[i].inter_sparse_optflow()
-
+              
     def filter_keypoints_outliers(self, debug=False):
         for c in range(self.num_cams):
             self.navcams[c].filter_keypoints(debug=debug)
@@ -1112,12 +1111,18 @@ class EgoMotion:
                 return rot, trans, cam_idx, mono_rotation, mono_translation
         return None, None, -1, None, None
 
-    def global_ego_motion_solver(self, img_idx=None, cam_list=[0, 1], est=None, debug_json_path=None):
+    def egomotion_solver(self, img_idx=None, cam_list=[0, 1], est=None, debug_json_path=None):
         if img_idx is None or img_idx == 0:
             return None, None
         # Estimate each camera's local egomotion by 5 point algorithm   
         rot0, trans0, camera_index, rot_list, trans_list = self.get_initial_egomotion_from_mono_estimation(cam_list)
-        # trans0 /= 2.0
+
+# pt0 = self.navcams[0].flow_intra_inter0 
+# pt1 = self.navcams[0].flow_intra_inter1 
+# pose_params = dict(focal=self.navcams[0].focal, pp = self.navcams[0].pp)
+# E, e_mask = cv2.findEssentialMat(pt0, pt0, method=cv2.RANSAC, prob=0.999, threshold=1e-6, **pose_params)
+# nin, rot, trans, mask = cv2.recoverPose(E, pt0, pt1, mask = e_mask, **pose_params)
+# rot = cv2.Rodrigues(rot)[0]
 
         if camera_index == -1:
             print('error: no initial estimation from 5 point are avalaible')
@@ -1158,6 +1163,7 @@ class EgoMotion:
             K1 = cur_cam.stereo_pair_cam.calib_K
             n_obs_i = cur_cam.flow_intra_inter0.shape[0]
             n_obs_j = cur_cam.flow_intra0.shape[0]
+            n_obs_j = 0
 
             json_data['cam'+str(c)] = {}
             json_data['cam'+str(c)]['n_flow013'] = n_obs_i
@@ -1210,8 +1216,7 @@ class EgoMotion:
             cam_obs[k][1] = n_obs_j
 
         if y_meas is None or y_meas.shape[0] < 9:
-            R, t = self.update_global_camera_pose_egomotion(cv2.Rodrigues(est_R)[0], est_t.reshape(3,1))
-            return R, t
+            return self.pose_R, self.pose_t
 
         x0 = x0.flatten()
 
@@ -1280,15 +1285,15 @@ class EgoMotion:
         acs_rot_aa = cv2.Rodrigues(acs_rot)[0]
 
 
-        print('gba:',self.navcams[0].img_idx, ego_elapsed.microseconds / 1000.0, 
+        print('img:' + str(self.navcams[0].img_idx), 
               'rot0 [%.3f, %.3f, %.3f]' % (rot0[0], rot0[1], rot0[2]),  
               'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
               'rot1 [%.3f, %.3f, %.3f]' % (res.x[0], res.x[1], res.x[2]),  
               'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
-              'conf', norm(err1), avg_least_square_conf)
-           
+              'proj_err', err_level)
+        
+        # R, t = invert_RT(R, t)
         pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
-
         return pose_R, pose_t 
         
 def _main(args):
@@ -1361,17 +1366,15 @@ def _main(args):
                 print('warning, no ' + frame_name + ' estimation from json')
                 global_tr = kv.pose_t
         else:
-            t0 = datetime.now()
             kv.update_keypoints(img_id, use_kite_kpts)
-            kv.update_sparse_flow()
+            kv.update_inter_optflow()
+            kv.update_intra_optflow()
             kv.filter_keypoints_outliers(debug=DEBUG_KEYPOINTS)
-            t1 = datetime.now()
-            _, global_tr = kv.global_ego_motion_solver(img_id, 
-                cam_list=CAMERA_LIST, debug_json_path='/tmp/pyego')
-            t2 = datetime.now()
-            delay_front_end = t1 - t0
-            delay_back_end = t2 - t1
-            print(delay_front_end.microseconds / 1000.0, delay_back_end.microseconds/ 1000.0)
+     
+            global_rot, global_tr = kv.egomotion_solver(img_id, 
+                                                        cam_list=CAMERA_LIST, 
+                                                        debug_json_path='/tmp/pyego')
+
 
         if img_id == 0:
             x, y, z = 0, 0, 0
@@ -1397,7 +1400,7 @@ def _main(args):
 
         img_bgr = []
         for i in range(len(CAMERA_LIST)):
-            img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (320, 240))
+            img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (640, 480))
             img_bgr.append(img)
         img_ = concat_images_list(img_bgr)
         cv2.imshow('Navigation cameras', img_)

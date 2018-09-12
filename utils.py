@@ -182,7 +182,8 @@ def concat_images(imga, imgb):
     return new_img
 
 def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
-    descriptor = cv2.ORB_create()
+    # descriptor = cv2.ORB_create()
+    descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
     for i in range(k0.shape[0]):
         if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
             continue
@@ -597,6 +598,8 @@ def load_recorded_images(record_path='./', max_imgs=10):
 
 
 def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (18, 18)):
+    if flow_kpt0 is None or len(flow_kpt0) == 0:
+        return None, None, None
     # Parameters for lucas kanade optical flow
     lk_params = dict( winSize  = win_size,
                     maxLevel = 5,

@@ -1,12 +1,12 @@
 import numpy as np
 
-CAMERA_LIST = [0]
+CAMERA_LIST = [0, 1]
 KITE_KPTS_PATH = '/tmp/kite/'
 
 
 SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
-MAX_NUM_KEYPOINTS = 96 
+MAX_NUM_KEYPOINTS = 64 
 SCIPY_LS_VERBOSE_LEVEL = 0
 # 
 
@@ -45,12 +45,12 @@ INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
 INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
 
 # configs for KITI dataset
-# DATASET = 'kite'
-# KITE_VIDEO_FORMAT = '2x2' # or 4x1
-# INPUT_IMAGE_PATH ='/home/jzhang/vo_data/SN51/20180907F04_SR80_000010051_NAV_0001'
-# INPUT_CALIB_PATH ='/home/jzhang/vo_data/SN51/nav_calib_imu_corrected.cfg'
-# ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
-# KITE_UNDISTORION_NEEDED = False
+DATASET = 'kite'
+KITE_VIDEO_FORMAT = '4x1' #2x2' # or 4x1
+INPUT_IMAGE_PATH ='/home/jzhang/vo_data/R80_JZ/20180911_patio/cap2'
+INPUT_CALIB_PATH ='/home/jzhang/vo_data/R80_JZ/nav_calib_imu_corrected.cfg'
+ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
+KITE_UNDISTORION_NEEDED = True
 
 
 
