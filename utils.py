@@ -8,7 +8,6 @@ from scipy.sparse import lil_matrix
 from numpy.linalg import inv, norm
 
 ''' Util functions '''
-# undistorted_img = undistort_kite_image(img, self.calib_K0, self.calib_K, self.calib_d)
 
 def canny(img, low_threshold, high_threshold):
     """Applies the Canny transform"""
@@ -366,8 +365,12 @@ def read_kitti_image(camera_images, num_cams, img_idx=0):
 def read_kite_image(camera_images, num_cams=None, video_format='2x2',img_idx=0):
     if video_format == '2x2':
         imgs_x4 = pil_split_rotate_kite_record_image(camera_images[img_idx])
-    else:
+    elif video_format == '4x1':
         imgs_x4 = split_kite_vertical_images(camera_images[img_idx])
+    elif video_format == '1x1':
+        imgs_x4 = kite_read_4x_images(camera_images[img_idx])
+    else:
+        assert(0)
     return imgs_x4
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
@@ -397,10 +400,12 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
         resized_im = im.resize(target_size, Image.BICUBIC);
         resized_im.save(im_name)
 
-def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4):
-    img_files = glob.glob(kite_base + '/*.jpg')
-    # img_files.sort(key=lambda f: int(filter(str.isdigit, f)))
-    return sorted(img_files)
+def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4, video_format = '2x2'):
+    img_files = sorted(glob.glob(kite_base + '/*.jpg'))
+    if video_format == '1x1':
+        x4_imgs = sync_navcam_collected_images(kite_base)
+        return x4_imgs 
+    return img_files 
 
 def load_kitti_poses(cfg_file=None):
     lines = [line.rstrip('\n') for line in open(cfg_file)]
@@ -571,6 +576,17 @@ def split_kite_vertical_images(img_file, num_cams=4):
     for i in range(num_cams):
         splited_images[i] = np.asarray(im.crop((0, im_height * i, im_width, im_height * (i + 1))))
     return splited_images
+
+
+def kite_read_4x_images(img_files, num_cams=4):
+    assert(num_cams == len(img_files))
+    images_4x = num_cams * [None]
+    for i in range(len(img_files)):
+        im = cv2.imread(img_files[i], cv2.IMREAD_GRAYSCALE)
+        if im is None:
+            return None
+        images_4x[i] = im
+    return images_4x
 
 def cv_split_navimage_4(img_file):
     """Split recorded nav images to 4
@@ -819,6 +835,82 @@ def global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=4, n_poses=1):
         n_offset_i = (n_obs_i + n_obs_j) * 3
     return A
 
+
+def get_current_image_timestamp(img_path):
+    ''' Get the timestamp from the image file name
+    ''' 
+    if not os.path.exists(img_path):
+        return -1
+    fname = os.path.basename(img_path)
+    ts = os.path.splitext(fname)[0]
+    if not ts.isdigit():
+        return -1
+    return long(ts)
+
+def get_cam0_valid_images(base_path, start_index = -1, end_index = -1):
+    ''' Get the valid cam0 image files
+    ''' 
+    cam0_path = os.path.join(base_path, 'cam0')
+    img_files = sorted(glob.glob(cam0_path + '/*.ppm'))
+    img_list = []
+    for img in img_files:
+        ts = get_current_image_timestamp(img)
+        if ts == -1:
+            print(img + ' do not have valid timestsamp!')
+            continue
+        if start_index > 0 and ts < start_index:
+            continue
+        if end_index > 0 and ts > end_index:
+            continue
+        img_list.append(img)
+    return img_list
+
+def sync_navcam_collected_images(base_path, start_index = -1, end_index = -1):
+    cam0_list = get_cam0_valid_images(base_path, start_index)
+    cam_123 = [] 
+    for index in range(1, 4):
+        cam_i_path = os.path.join(base_path, 'cam'+str(index))
+        if not os.path.exists(cam_i_path):
+            print(cam_i_path + ' does not exist')
+            return None        
+        current_images = sorted(glob.glob(cam_i_path + '/*.ppm'))
+        # for each image find the frame closest to cam0 frames
+        prev_cam0_ts = 0
+        prev_cami_ts = 0
+        synced_cami = []
+        prev_index = 0
+        for cam0 in cam0_list:
+            # get cam0 timestamp
+            cam0_ts = get_current_image_timestamp(cam0)
+            assert(cam0_ts)
+            synced_file = None
+            for i in range(prev_index, len(current_images)):
+                img_i = current_images[i]
+                cur_ts = get_current_image_timestamp(img_i)
+                if cur_ts == -1:
+                    continue
+                offset =  cur_ts - cam0_ts
+                if offset > 80000:
+                    break
+                if abs(offset) < 80000:
+                    synced_file = img_i
+                    prev_index = i
+                    break
+            assert(synced_file)
+            synced_cami.append(synced_file)
+        cam_123.append(synced_cami)
+
+
+    synced = []
+    for i in range(len(cam0_list)):
+        x4_frames = []
+        x4_frames.append(cam0_list[i])
+        for index in range(0, len(cam_123)):
+            x4_frames.append(cam_123[index][i])
+        synced.append(x4_frames)
+    return synced
+
+
 def compute_acs_to_camera0_transformation(acs_to_imu_rotation_angle=0, rotation_imu_to_cam0=np.eye(3), translation_imu_to_camera0=np.zeros([3, 1])):
     '''[Compute the rotation and translation from ACS (NED)frame to camera0 frame ]
     
@@ -838,7 +930,7 @@ def compute_acs_to_camera0_transformation(acs_to_imu_rotation_angle=0, rotation_
     translation_acs_to_cam0 = translation_imu_to_camera0
     return rotation_acs_to_cam0, translation_acs_to_cam0
 
-def transform_egomtion_from_frame_a_to_b(egomotion_rotation_a, egomotion_translation_a, rotation_a_to_b, translation_a_to_b):
+def transform_egomotion_from_frame_a_to_b(egomotion_rotation_a, egomotion_translation_a, rotation_a_to_b, translation_a_to_b):
     '''Transform egomotion from frame a to b
     '''
     egomotion_rotation_b = np.dot(rotation_a_to_b, np.dot(egomotion_rotation_a, rotation_a_to_b.T))

@@ -165,7 +165,6 @@ class navcam:
         self.F = None 
     
         self.proj_mtx = None
-        self.least_square_conf = None
         
 
     def mono_vo(self, abs_scale = 1.0):
@@ -321,95 +320,13 @@ class navcam:
             self.update_camera_pose_egomotion(cv2.Rodrigues(est_R)[0], est_t.reshape(3,))
             return 
         err_proj = res[1]
-        err_level = norm(err_proj)
-        if self.least_square_conf is None:
-            self.least_square_conf = err_level
-        avg_least_square_conf = self.least_square_conf / (self.img_idx)
 
-        if err_level > 5 * avg_least_square_conf:
-            return self.stereo_R, self.stereo_t
-        else:
-            self.least_square_conf += err_level
+        reprojection_err = norm(err_proj)
 
         ba_R, ba_t = res[0][0:3], res[0][3:6]
         R = cv2.Rodrigues(ba_R)[0]
         t = ba_t
         stereo_R, stereo_t = self.update_camera_pose_egomotion(R, t)
-
-    def local_bundle_adjustment_ransac(self, init_with_mono=True):
-        if self.img_idx is None or self.img_idx == 0:
-            return
-        proj_err_threshold = 1.0
-        min_ransac_013 = 2
-        min_ransac_01 = 2
-        target_013_inliers_pct = 0.8
-        target_01_inliers_pct = 0.8
-        max_ransac_inters = 5
-        min_ransac_inters = 2
-
-        target_013_inliers_num = int(self.flow_intra_inter0.shape[0] * target_013_inliers_pct)
-        target_01_inliers_num = int(self.flow_intra0.shape[0] * target_01_inliers_pct)
-
-        inliers_013 =  [[] for i in range(3)]
-        inliers_01 = [[] for i in range(2)]
-    
-        kpts013 = (self.flow_intra_inter0, self.flow_intra_inter1, self.flow_intra_inter3)
-        kpts01 = (self.flow_intra0, self.flow_intra1)        
-        init_est = self.generate_initial_guess(init_with_mono)
-
-        R, t = init_est
-        for it in range(max_ransac_inters):
-            kpts013_maybe_inliers = []
-            if self.flow_intra_inter0 is not None and self.flow_intra_inter0.shape[0] > min_ransac_013:
-                flow013_ransac_idx = np.random.choice(range(self.flow_intra_inter0.shape[0]), min_ransac_013, replace=False)
-                kpts013_maybe_inliers.append(np.take(kpts013[0], flow013_ransac_idx, axis=0))
-                kpts013_maybe_inliers.append(np.take(kpts013[1], flow013_ransac_idx, axis=0))
-                kpts013_maybe_inliers.append(np.take(kpts013[2], flow013_ransac_idx, axis=0))
-
-
-            kpts01_maybe_inliers = []
-            if self.flow_intra0 is not None and self.flow_intra0.shape[0] > min_ransac_01:
-                flow01_ransac_idx = np.random.choice(range(self.flow_intra0.shape[0]), min_ransac_01, replace=False)
-                kpts01_maybe_inliers.append(np.take(kpts01[0], flow01_ransac_idx, axis=0))
-                kpts01_maybe_inliers.append(np.take(kpts01[1], flow01_ransac_idx, axis=0))
-            # import pdb; pdb.set_trace()
-            rt, proj_err0 = self.local_ego_motion_solver(init_est, kpts013_maybe_inliers, kpts01_maybe_inliers)
-            if rt is None:
-                continue
-            R, t = rt[0:3], rt[3:6] 
-
-            proj_err1 = self.local_ego_motion_solver((R, t), kpts013, kpts01, ba_enabled=False)[1]
-            mb_in_013 = []
-            mb_in_01 = []  
-            for k in range(self.flow_intra_inter0.shape[0]):
-                err013 = abs(proj_err1[0][k]) + abs(proj_err1[1][k]) + abs(proj_err1[2][k])
-                err013 = norm(err013) / 3.0
-                if err013 < proj_err_threshold:
-                    mb_in_013.append(k)
-            for k in range(self.flow_intra0.shape[0]):
-                err01 = abs(proj_err1[3][k]) + abs(proj_err1[4][k])
-                err01 = norm(err01) / 2.0
-                if err01 < proj_err_threshold:
-                    mb_in_01.append(k)
-
-            in_013 = []
-            in_01 = []
-            # import pdb; pdb.set_trace()
-            if len(mb_in_013) > len(inliers_013[0]) and len(mb_in_01) > len(inliers_01[0]):
-                in_013.append(np.take(kpts013[0], mb_in_013, axis=0))
-                in_013.append(np.take(kpts013[1], mb_in_013, axis=0))
-                in_013.append(np.take(kpts013[2], mb_in_013, axis=0))
-                in_01.append(np.take(kpts01[0],  mb_in_01,  axis=0))
-                in_01.append(np.take(kpts01[1],  mb_in_01,  axis=0))
-                inliers_013 = in_013
-                inliers_01 = in_01
-
-            # import pdb; pdb.set_trace()
-            if len(mb_in_013) > target_013_inliers_num and it > min_ransac_inters:
-                self.inliers_013 = inliers_013
-                self.inliers_01 = inliers_01
-                self.local_bundle_adjustment(True, inliers_013, inliers_01)
-                return 
 
     def local_ego_motion_solver(self, init_est = (None, None), kpts013=None, kpts01=None, ba_enabled=True):
         est_R, est_t = init_est
@@ -567,14 +484,14 @@ class navcam:
             k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=INTRA_OPTFLOW_WIN_SIZE)
             self.flow_kpt1 = k1
             self.flow_kpt2 = k2
-            compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+            # compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
             self.filter_intra_keypoints()
 
     def inter_sparse_optflow(self):
         k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=INTER_OPTFLOW_WIN_SIZE)
         self.flow_kpt3 = k3
         self.flow_kpt4 = k4
-        compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
+        # compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
         self.filter_inter_keypoints()
 
 
@@ -808,7 +725,6 @@ class EgoMotion:
         self.camera_images = None
         self.prev_scale = 1.0
         self.img_idx = -1
-        self.least_square_conf = None
         self.dataset = dataset.lower()
         self.dataset_seq = data_seq
         self.annotations = get_kitti_ground_truth(input_path, data_seq)
@@ -824,7 +740,7 @@ class EgoMotion:
             self.num_imgs  = len(self.camera_images[0])
             self.num_cams = len(self.camera_images)
         elif self.dataset.lower() == 'kite':
-            self.camera_images = get_kite_image_files(input_path, data_seq, num_cams)
+            self.camera_images = get_kite_image_files(input_path, data_seq, num_cams, KITE_VIDEO_FORMAT)
             self.num_imgs  = len(self.camera_images)
             self.num_cams = 4
         else:
@@ -878,6 +794,9 @@ class EgoMotion:
         rot[1], trans[1] = rot_10, trans_10
         rot[2], trans[2] = rot_23, trans_23
         rot[3], trans[3] = rot_32, trans_32
+
+        self.rot_01 = rot_01
+        self.trans_01 = trans_01
 
         self.ego_R = cv2.Rodrigues(np.eye(3))[0]
         self.ego_t = np.zeros([3, 1])
@@ -971,6 +890,8 @@ class EgoMotion:
             return read_kitti_image(self.camera_images, self.num_cams, img_idx)
         elif self.dataset == 'kite':
             img = read_kite_image(self.camera_images, self.num_cams, KITE_VIDEO_FORMAT, img_idx)
+            if img is None:
+                return None
             if KITE_UNDISTORION_NEEDED:
                 for i in range(4):
                     img[i] = undistort_kite_image(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
@@ -1011,17 +932,25 @@ class EgoMotion:
         cost_err = None
 
         rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6]
+        rotation_camera1_frame, translation_camera1_frame = rotation_camera0_frame, translation_camera0_frame
         rotation_camera2_frame, translation_camera2_frame = rotation_camera0_frame, translation_camera0_frame
+
+        rotation_cam0_to_cam1 = self.rot_01
+        translation_cam0_to_cam1 = self.trans_01
 
         rotation_cam0_to_cam2 = self.rotation_cam0_to_cam2
         translation_cam0_to_cam2 = self.translation_cam0_to_cam2
 
-        rotation_camera2_frame, translation_camera2_frame = transform_egomtion_from_frame_a_to_b(rotation_camera0_frame, translation_camera0_frame.reshape(3, 1), rotation_cam0_to_cam2, translation_cam0_to_cam2)
+        rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, translation_camera0_frame.reshape(3, 1), rotation_cam0_to_cam1, translation_cam0_to_cam1)
+        rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, translation_camera0_frame.reshape(3, 1), rotation_cam0_to_cam2, translation_cam0_to_cam2)
 
         for c in cam_list:
-            if c < 2:
+            if c == 0:
                 egomotion_rotation = rotation_camera0_frame
                 egomotion_translation = translation_camera0_frame
+            elif c == 1:
+                egomotion_rotation = rotation_camera1_frame
+                egomotion_translation = translation_camera1_frame
             else:
                 egomotion_rotation = rotation_camera2_frame
                 egomotion_translation = translation_camera2_frame
@@ -1106,7 +1035,7 @@ class EgoMotion:
                 if cam_idx >= 2:
                     rotation_cam2_to_cam0 = self.rotation_cam2_to_cam0
                     translation_cam2_to_cam0 = self.translation_cam2_to_cam0
-                    rot2, trans2 = transform_egomtion_from_frame_a_to_b(rot, trans, rotation_cam2_to_cam0, translation_cam2_to_cam0)
+                    rot2, trans2 = transform_egomotion_from_frame_a_to_b(rot, trans, rotation_cam2_to_cam0, translation_cam2_to_cam0)
                     return rot2, trans2, cam_idx, mono_rotation, mono_translation
                 return rot, trans, cam_idx, mono_rotation, mono_translation
         return None, None, -1, None, None
@@ -1128,7 +1057,7 @@ class EgoMotion:
             print('error: no initial estimation from 5 point are avalaible')
             return None, None
 
-        acs_rot0, acs_trans0 = transform_egomtion_from_frame_a_to_b(cv2.Rodrigues(rot0)[0], trans0, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
+        acs_rot0, acs_trans0 = transform_egomotion_from_frame_a_to_b(cv2.Rodrigues(rot0)[0], trans0, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
         acs_rot_aa0 = cv2.Rodrigues(acs_rot0)[0]
 
         num_cams = len(cam_list)
@@ -1143,7 +1072,7 @@ class EgoMotion:
 
         rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6]
 
-        rotation_camera2_frame, translation_camera2_frame = transform_egomtion_from_frame_a_to_b(
+        rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(
             rotation_camera0_frame, translation_camera0_frame, self.rotation_cam0_to_cam2, self.translation_cam0_to_cam2)
 
         for k in range(num_cams):
@@ -1163,7 +1092,9 @@ class EgoMotion:
             K1 = cur_cam.stereo_pair_cam.calib_K
             n_obs_i = cur_cam.flow_intra_inter0.shape[0]
             n_obs_j = cur_cam.flow_intra0.shape[0]
-            n_obs_j = 0
+
+            if not USE_01_FEATURE:
+                n_obs_j = 0
 
             json_data['cam'+str(c)] = {}
             json_data['cam'+str(c)]['n_flow013'] = n_obs_i
@@ -1240,15 +1171,16 @@ class EgoMotion:
         ego_elapsed = t1 - t0
 
         err1 = self.global_fun(res.x, cam_obs, y_meas, cam_list)
-        err_level = norm(err1)
+        reprojection_err = norm(err1)
 
         R = cv2.Rodrigues(res.x[0:3])[0]
-        t = res.x[3:6]        
+        t = res.x[3:6]       
+
         json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
 
         # plt.plot(err0); plt.plot(err1); plt.show()
         # import pdb; pdb.set_trace()
-        
+
         x_offset = 6
         for c in cam_list:
             n_obj_013, n_obj_01 = cam_obs[c]
@@ -1264,36 +1196,37 @@ class EgoMotion:
                 x_offset += 3 * n_obj_01
                 # import pdb ; pdb.set_trace()
 
-        if self.least_square_conf is None:
-            self.least_square_conf = err_level
-        avg_least_square_conf = self.least_square_conf / (self.img_idx)
-
         if debug_json_path:
             outfile = os.path.join(debug_json_path, 'pyframe'+str(img_idx)+'.json')
             with open(outfile, 'w') as f:
                 json.dump(json_data, f, sort_keys=True, indent=4)
 
-        if err_level > 10 * avg_least_square_conf:
-            return self.pose_R, self.pose_t
-        else:
-            self.least_square_conf += err_level
-
-        avg_least_square_conf = self.least_square_conf / self.img_idx
         t = t.reshape(3,1)
-        # import pdb; pdb.set_trace()
-        acs_rot, acs_trans = transform_egomtion_from_frame_a_to_b(R, t, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
+
+        acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
         acs_rot_aa = cv2.Rodrigues(acs_rot)[0]
 
+        cam1_rot, cam1_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rot_01, self.trans_01)
+        cam1_rot_aa = cv2.Rodrigues(acs_rot)[0]
+
+        # import pdb; pdb.set_trace()
 
         print('img:' + str(self.navcams[0].img_idx), 
               'rot0 [%.3f, %.3f, %.3f]' % (rot0[0], rot0[1], rot0[2]),  
               'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
               'rot1 [%.3f, %.3f, %.3f]' % (res.x[0], res.x[1], res.x[2]),  
               'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
-              'proj_err', err_level)
+              'proj_err', reprojection_err)
         
+        # Note: the actual egomotion should be inverted as we estimate R,t from current feature to previous 
         # R, t = invert_RT(R, t)
-        pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
+        avg_reprojection_err = reprojection_err / float(np.sum(cam_obs))
+
+        if avg_reprojection_err > AVG_REPROJECTION_ERROR:
+            print('reject the results: reprojection error: ' + str(reprojection_err) + ' avg reprjection error: ' + str(avg_reprojection_err))
+            return self.pose_R, self.pose_t
+        
+        pose_R, pose_t = self.update_global_camera_pose_egomotion(R, t)
         return pose_R, pose_t 
         
 def _main(args):
@@ -1344,7 +1277,8 @@ def _main(args):
             kv.load_kitti_gt(img_id)
 
         camera_images = kv.read_one_image(img_id)
-
+        if camera_images == None:
+            continue
         kv.upload_images(camera_images)
         
         if external_json_pose:

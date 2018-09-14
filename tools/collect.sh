@@ -2,10 +2,10 @@
 
 # Script to run on TX2 to colllect navcam images, imu data and acs_metadata into a folder
 
-EXP=100
-G=1
-NUM_IMAGES=100
-F=/tmp
+EXP=$1
+G=$2
+NUM_IMAGES=$3
+F=$4
 IMU_RATE=150 
 ACS_RATE=30 
 IMG_RATE=30 

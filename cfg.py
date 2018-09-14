@@ -1,6 +1,28 @@
 import numpy as np
 
 CAMERA_LIST = [0, 1]
+
+
+# configs for KITTI dataset
+# DATASET = 'kitti' 
+DATASET = 'kite'
+
+if DATASET == 'kitti':
+    INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
+    INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
+else:
+    # configs for KITI dataset
+    KITE_VIDEO_FORMAT = '1x1' # 2x2, 4x1, 1x1
+    # INPUT_IMAGE_PATH ='/home/jzhang/vo_data/R80_JZ/20180911_patio/cap2'
+    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/R80_JZ/0913_cap/cap2'
+    INPUT_CALIB_PATH ='/home/jzhang/vo_data/R80_JZ/nav_calib_imu_corrected.cfg'
+    ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
+    KITE_UNDISTORION_NEEDED = True
+
+# Features for egomotion
+AVG_REPROJECTION_ERROR = 5.0
+USE_01_FEATURE = False
+
 KITE_KPTS_PATH = '/tmp/kite/'
 
 
@@ -8,7 +30,6 @@ SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
 MAX_NUM_KEYPOINTS = 64 
 SCIPY_LS_VERBOSE_LEVEL = 0
-# 
 
 FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
 FIVE_POINTS_ALGO_EPI_THRESHOLD = 1e-2
@@ -38,21 +59,6 @@ LS_PARMS = dict(max_nfev=5,
                 xtol=1e-4,
                 gtol=1e-4,
                 method='trf')
-
-# configs for KITTI dataset
-DATASET = 'kitti' 
-INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
-INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
-
-# configs for KITI dataset
-DATASET = 'kite'
-KITE_VIDEO_FORMAT = '4x1' #2x2' # or 4x1
-INPUT_IMAGE_PATH ='/home/jzhang/vo_data/R80_JZ/20180911_patio/cap2'
-INPUT_CALIB_PATH ='/home/jzhang/vo_data/R80_JZ/nav_calib_imu_corrected.cfg'
-ACS_TO_CAMEAR0_ROTATION_ANGLE = -45 # 45 degree
-KITE_UNDISTORION_NEEDED = True
-
-
 
 vertices_large_0 = np.array([[ (557, 0),   (639, 0),   (639, 105), (436, 293), (386, 272)]], dtype=np.int32)
 vertices_small_0 = np.array([[ (0, 247),   (0, 247),   (134, 264), (134, 305), (0, 277)  ]], dtype=np.int32) 
