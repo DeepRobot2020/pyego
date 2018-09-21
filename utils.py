@@ -6,6 +6,8 @@ from PIL import Image
 import os, io, libconf, copy
 from scipy.sparse import lil_matrix
 from numpy.linalg import inv, norm
+from pyquaternion import Quaternion
+
 
 ''' Util functions '''
 
@@ -181,8 +183,8 @@ def concat_images(imga, imgb):
     return new_img
 
 def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
-    # descriptor = cv2.ORB_create()
-    descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
+    descriptor = cv2.ORB_create()
+    # descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
     for i in range(k0.shape[0]):
         if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
             continue
@@ -338,6 +340,25 @@ def get_kitti_ground_truth(kitti_base=None, data_seq=None):
 	    annotations = f.readlines()
     return annotations
 
+def get_kite_ground_truth(file_path):
+    acs_data = []
+    with open(file_path) as f:
+        reader = csv.reader(f)
+        for row in reader:
+            acs_data.append(np.array(row, dtype=np.float32))
+    return np.array(acs_data)
+
+def get_closest_acs_metadata(acsmeta, image_timestamp_ns, prev_acsmeta_index, max_range = 10000):
+
+    img_acs_diff = np.absolute(acsmeta[:,0][prev_acsmeta_index: prev_acsmeta_index + max_range] - image_timestamp_ns)
+    min_error_index = np.argmin(img_acs_diff)
+    error = img_acs_diff[min_error_index]
+
+    matched_acsmeta_index = prev_acsmeta_index + min_error_index
+
+    prev_acsmeta_index = min_error_index + 1
+    return matched_acsmeta_index, 
+
 def load_calib_images(self, calib_img_path='~/vo_data/SN40/calib_data/', num_cams=4, max_imgs=100):
     cam_files = num_cams * [None]
     for c in range(num_cams):
@@ -371,7 +392,8 @@ def read_kite_image(camera_images, num_cams=None, video_format='2x2',img_idx=0):
         imgs_x4 = kite_read_4x_images(camera_images[img_idx])
     else:
         assert(0)
-    return imgs_x4
+    ts = float(camera_images[img_idx][0].split('/')[-1].split('.')[0])
+    return imgs_x4, ts
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
     seq_path =  os.path.join(kitti_base, 'sequences')
@@ -401,10 +423,12 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
         resized_im.save(im_name)
 
 def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4, video_format = '2x2'):
-    img_files = sorted(glob.glob(kite_base + '/*.jpg'))
     if video_format == '1x1':
         x4_imgs = sync_navcam_collected_images(kite_base)
         return x4_imgs 
+
+    img_files = sorted(glob.glob(kite_base + '/*.jpg'))
+    import pdb; pdb.set_trace()
     return img_files 
 
 def load_kitti_poses(cfg_file=None):
@@ -911,7 +935,7 @@ def sync_navcam_collected_images(base_path, start_index = -1, end_index = -1):
     return synced
 
 
-def compute_acs_to_camera0_transformation(acs_to_imu_rotation_angle=0, rotation_imu_to_cam0=np.eye(3), translation_imu_to_camera0=np.zeros([3, 1])):
+def compute_body_to_camera0_transformation(imu_to_body_rotation=np.eye(3), rotation_imu_to_cam0=np.eye(3), translation_imu_to_camera0=np.zeros([3, 1])):
     '''[Compute the rotation and translation from ACS (NED)frame to camera0 frame ]
     
     Keyword Arguments:
@@ -919,12 +943,8 @@ def compute_acs_to_camera0_transformation(acs_to_imu_rotation_angle=0, rotation_
         imu_to_camera0_rotation {[type]} -- [description] (default: {np.eye(3)})
         imu_to_camera0_translation {[type]} -- [description] (default: {np.zeros([3, 1])})
     '''
-    acs_to_imu_rotation_angle = math.radians(acs_to_imu_rotation_angle)
     
-    rotation_acs_to_imu = np.array([
-            math.cos(acs_to_imu_rotation_angle), math.sin(acs_to_imu_rotation_angle), 0,
-           -math.sin(acs_to_imu_rotation_angle), math.cos(acs_to_imu_rotation_angle), 0,
-            0.0, 0.0, 1.0]).reshape(3, 3)
+    rotation_acs_to_imu = imu_to_body_rotation.transpose()
     rotation_acs_to_cam0 = np.dot(rotation_imu_to_cam0, rotation_acs_to_imu)
 
     translation_acs_to_cam0 = translation_imu_to_camera0
@@ -939,5 +959,19 @@ def transform_egomotion_from_frame_a_to_b(egomotion_rotation_a, egomotion_transl
     egomotion_translation_b +=  np.dot(rotation_a_to_b, egomotion_translation_a)
     return egomotion_rotation_b, egomotion_translation_b
     
+
+def angular_velocity_to_rotation_matrix(w = [0.0, 0.0, 0.0], dt = 0.0):
+    wx, wy, wz = w[0], w[1], w[2]
+    # construct a unit quaternion from an identity matrix
+    # q = q + 0.5 * w * q * t
+    # 0.5 * w * q converting a body angular velocity to quaternion velocity
+    n0 = 1.0; n1 = 0.0; n2 = 0.0; n3 = 0.0;
+    n0 = n0 - dt*((wx*n1)/2 + (wy*n2)/2 + (wz*n3)/2)
+    n1 = n1 + dt*((wx*n0)/2 - (wy*n3)/2 + (wz*n2)/2)
+    n2 = n2 + dt*((wx*n3)/2 + (wy*n0)/2 - (wz*n1)/2)
+    n3 = n3 + dt*((wy*n1)/2 - (wx*n2)/2 + (wz*n0)/2)
+    q0 = Quaternion(array=np.array([n0, n1, n2, n3]))
+    return q0.rotation_matrix
+
 
 
