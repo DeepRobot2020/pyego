@@ -1,15 +1,8 @@
 import csv
 import matplotlib.pyplot as plt
 import numpy as np
-
-
-from utils import *
-from cfg import *
-
-image_base = '/home/jzhang/vo_data/SR80_901020874/cap1'
-acs_csv = '/home/jzhang/vo_data/SR80_901020874/cap1/acsmeta0.csv'
-
-
+import os
+from utils import  get_cam0_valid_images
 
 class ImageImuSyncer:
     def __init__(self, acsmeta_path, base_image_path, start_timestamp = -1):
@@ -59,18 +52,33 @@ class ImageImuSyncer:
         # angular and linear velocity 
         w = [0.0, 0.0, 0.0]; v = [0.0, 0.0, 0.0];
 
-        for ts in range(image_ts_index - 1, image_ts_index - 11, -1):
+        for ts in range(image_ts_index - 1, max(0, image_ts_index - 10), -1):
             # import pdb; pdb.set_trace()
             key = self.sorted_dict_keys[ts]
             if isinstance(self.data_dict[key], list):
                 msg = self.data_dict[key]
                 w = np.array([msg[10], msg[11], msg[12]], dtype=np.float32)
                 v = np.array([msg[4], msg[5], msg[6]], dtype=np.float32)
-                break
-        return w, v
+                return w, v
+        return None, None
 
-
-syn = ImageImuSyncer(acs_csv, image_base)
-av, lv = syn.body_velocity_from_one_pose(193286729)
-
-import pdb; pdb.set_trace()
+    def body_pose(self, image_ts):
+        image_ts_index = np.where(self.sorted_dict_keys == image_ts)[0][0]
+        
+        for ts in range(image_ts_index - 1, max(0, image_ts_index - 100), -1):
+            # import pdb; pdb.set_trace()
+            key = self.sorted_dict_keys[ts]
+            if isinstance(self.data_dict[key], list):
+                msg = self.data_dict[key]
+                pose = np.array([msg[1], msg[2], msg[3]], dtype=np.float32)
+                return pose
+        return None
+    
+    def get_initial_pose(self):
+        for key in self.sorted_dict_keys:
+            if isinstance(self.data_dict[key], list): 
+                msg = self.data_dict[key]
+                position = np.array([msg[1], msg[2], msg[3]], dtype=np.float32)
+                oritention = np.array([msg[7], msg[8], msg[9]], dtype=np.float32)
+                return (position, oritention)
+        return (None, None)

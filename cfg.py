@@ -1,6 +1,6 @@
 import numpy as np
 
-CAMERA_LIST = [0, 1]
+CAMERA_LIST = [0, 1, 2]
 
 
 # configs for KITTI dataset
@@ -21,7 +21,7 @@ else:
 IMU_TO_BODY_ROT = np.array([0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0, 1]).reshape(3, 3)
 
 # Features for egomotion
-AVG_REPROJECTION_ERROR = 5.0
+AVG_REPROJECTION_ERROR = 0.65
 USE_01_FEATURE = False
 DEBUG_KEYPOINTS = False
 

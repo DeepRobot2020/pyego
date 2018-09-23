@@ -393,7 +393,8 @@ def read_kite_image(camera_images, num_cams=None, video_format='2x2',img_idx=0):
     else:
         assert(0)
     ts = float(camera_images[img_idx][0].split('/')[-1].split('.')[0])
-    return imgs_x4, ts
+    ts = ts / 1e3
+    return imgs_x4, int(ts)
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
     seq_path =  os.path.join(kitti_base, 'sequences')
@@ -974,4 +975,8 @@ def angular_velocity_to_rotation_matrix(w = [0.0, 0.0, 0.0], dt = 0.0):
     return q0.rotation_matrix
 
 
+def linear_velocity_to_translation(v = [0.0, 0.0, 0.0], dt = 0.0):
+    vx, vy, vz = v[0], v[1], v[2]
+    x = vx *dt; y = vy * dt; z = vz * dt;
+    return np.array([x, y, z]).reshape(3, 1)
 

@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 import argparse
 import matplotlib.pyplot as plt
+from acsmeta import ImageImuSyncer
 
 from utils import *
 from cfg import *
@@ -737,6 +738,8 @@ class EgoMotion:
 
         self.prev_egomotion = np.zeros((1,6))
         self.prev_invalid = True
+        self.syncer = None
+        self.prev_ts = 0
 
         if self.dataset.lower() == 'kitti':
             self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
@@ -746,6 +749,8 @@ class EgoMotion:
             self.camera_images = get_kite_image_files(input_path, data_seq, num_cams, KITE_VIDEO_FORMAT)
             self.num_imgs  = len(self.camera_images)
             self.num_cams = 4
+            self.syncer = ImageImuSyncer(ACS_META, INPUT_IMAGE_PATH)
+
         else:
             raise ValueError('Unsupported dataset')
 
@@ -803,7 +808,9 @@ class EgoMotion:
         self.ego_t = np.zeros([3, 1])
 
         self.pose_R = np.eye(3)
-        self.pose_t = np.zeros([3, 1])
+        # import pdb; pdb.set_trace()
+        self.pose_t = self.syncer.get_initial_pose()[1].reshape(3, 1)
+
         # Compute the fundamental matrix
         for left in range(self.num_cams):
             right = self.STEREOCONFG[left]
@@ -916,19 +923,23 @@ class EgoMotion:
         x0_offset = 6
         y_offset = 0
         cost_err = None
+        
+        rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6].reshape(3, 1)
 
-        rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6]
-        rotation_camera1_frame, translation_camera1_frame = rotation_camera0_frame, translation_camera0_frame
-        rotation_camera2_frame, translation_camera2_frame = rotation_camera0_frame, translation_camera0_frame
+        rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
+                                                                                                  translation_camera0_frame, 
+                                                                                                  self.navcams[0].calib_R, 
+                                                                                                  self.navcams[0].calib_t)
 
-        rotation_cam0_to_cam1 = self.rot_01
-        translation_cam0_to_cam1 = self.trans_01
+        rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
+                                                                                                  translation_camera0_frame, 
+                                                                                                  self.rotation_cam0_to_cam2, 
+                                                                                                  self.translation_cam0_to_cam2)
 
-        rotation_cam0_to_cam2 = self.rotation_cam0_to_cam2
-        translation_cam0_to_cam2 = self.translation_cam0_to_cam2
-
-        rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, translation_camera0_frame.reshape(3, 1), rotation_cam0_to_cam1, translation_cam0_to_cam1)
-        rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, translation_camera0_frame.reshape(3, 1), rotation_cam0_to_cam2, translation_cam0_to_cam2)
+        rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
+                                                                                                  translation_camera2_frame, 
+                                                                                                  self.navcams[2].calib_R, 
+                                                                                                  self.navcams[2].calib_t)
 
         for c in cam_list:
             if c == 0:
@@ -937,9 +948,12 @@ class EgoMotion:
             elif c == 1:
                 egomotion_rotation = rotation_camera1_frame
                 egomotion_translation = translation_camera1_frame
-            else:
+            elif c == 2:
                 egomotion_rotation = rotation_camera2_frame
                 egomotion_translation = translation_camera2_frame
+            else:
+                egomotion_rotation = rotation_camera3_frame
+                egomotion_translation = translation_camera3_frame
 
             rot_vecs = cv2.Rodrigues(egomotion_rotation)[0]
             trans_vecs = egomotion_translation
@@ -1026,18 +1040,11 @@ class EgoMotion:
                 return rot, trans, cam_idx, mono_rotation, mono_translation
         return None, None, -1, None, None
 
-    def egomotion_solver(self, img_idx=None, cam_list=[0, 1], est=None, debug_json_path=None):
+    def egomotion_solver(self, img_idx=None, ts = None, cam_list=[0, 1], est=None, debug_json_path=None):
         if img_idx is None or img_idx == 0:
             return None, None
         # Estimate each camera's local egomotion by 5 point algorithm   
         rot0, trans0, camera_index, rot_list, trans_list = self.get_initial_egomotion_from_mono_estimation(cam_list)
-
-        # pt0 = self.navcams[0].flow_intra_inter0 
-        # pt1 = self.navcams[0].flow_intra_inter1 
-        # pose_params = dict(focal=self.navcams[0].focal, pp = self.navcams[0].pp)
-        # E, e_mask = cv2.findEssentialMat(pt0, pt0, method=cv2.RANSAC, prob=0.999, threshold=1e-6, **pose_params)
-        # nin, rot, trans, mask = cv2.recoverPose(E, pt0, pt1, mask = e_mask, **pose_params)
-        # rot = cv2.Rodrigues(rot)[0]
 
         if camera_index == -1:
             print('error: no initial estimation from 5 point are avalaible')
@@ -1054,6 +1061,25 @@ class EgoMotion:
 
         if not self.prev_invalid:
             x0 = self.prev_egomotion.reshape(6,1)
+            
+        if ts is not None and self.syncer is not None:
+            wv, vv = self.syncer.body_velocity_from_one_pose(ts)
+            if wv is not None and vv is not None:
+                time_diff = ts - self.prev_ts
+                time_diff /= 1e6
+                time_diff = min(0.04, time_diff)
+                acs_rot_est = angular_velocity_to_rotation_matrix(wv, time_diff)
+                acs_trans_est = linear_velocity_to_translation(vv, time_diff)
+                acs_rot_est_aa = cv2.Rodrigues(acs_rot_est)[0]
+
+                rotation0, translation0 = transform_egomotion_from_frame_a_to_b(acs_rot_est, 
+                                                                                acs_trans_est, 
+                                                                                self.rotation_acs_to_cam0, 
+                                                                            self.translation_acs_to_cam0)
+                rotation_aa = cv2.Rodrigues(rotation0)[0]
+                # import pdb; pdb.set_trace()
+                x0 = np.vstack([rotation_aa, translation0])
+                # import pdb; pdb.set_trace()
 
 
         json_data = {}
@@ -1067,7 +1093,6 @@ class EgoMotion:
                                                                                                   self.navcams[0].calib_R, 
                                                                                                   self.navcams[0].calib_t)
 
-
         rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
                                                                                                   translation_camera0_frame, 
                                                                                                   self.rotation_cam0_to_cam2, 
@@ -1076,7 +1101,7 @@ class EgoMotion:
         rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
                                                                                                   translation_camera2_frame, 
                                                                                                   self.navcams[2].calib_R, 
-                                                                                                  self.navcams[2].calib_R)
+                                                                                                  self.navcams[2].calib_t)
 
         rotation_list = [rotation_camera0_frame, rotation_camera1_frame, rotation_camera2_frame, rotation_camera3_frame]
         translation_list = [translation_camera0_frame, translation_camera1_frame, translation_camera2_frame, translation_camera3_frame]
@@ -1208,9 +1233,6 @@ class EgoMotion:
 
         acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
         acs_rot_aa = cv2.Rodrigues(acs_rot)[0]
-
-        cam1_rot, cam1_trans = transform_egomotion_from_frame_a_to_b(acs_rot, acs_trans, self.rot_01, self.trans_01)
-        cam1_rot_aa = cv2.Rodrigues(acs_rot)[0]
         
         # Note: the actual egomotion should be inverted as we estimate R,t from current feature to previous 
         # R, t = invert_RT(R, t)
@@ -1308,7 +1330,7 @@ def _main(args):
             kv.update_intra_optflow()
             kv.filter_keypoints_outliers(debug=DEBUG_KEYPOINTS)
      
-            global_rot, global_tr = kv.egomotion_solver(img_id, 
+            global_rot, global_tr = kv.egomotion_solver(img_id, ts,
                                                         cam_list=CAMERA_LIST, 
                                                         debug_json_path='/tmp/pyego')
 
@@ -1330,7 +1352,11 @@ def _main(args):
             draw_x0, draw_y0 = int(x) + draw_ofs_x, int(z) + draw_ofs_y    
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueZ) + draw_ofs_y
         else:
-            draw_x0, draw_y0 = int(x) + draw_ofs_x, int(y) + draw_ofs_y    
+            draw_x0, draw_y0 = int(x) + draw_ofs_x, int(y) + draw_ofs_y  
+            current_true_pose = kv.syncer.body_pose(ts)
+            if current_true_pose is not None:
+                kv.trueX, kv.trueY, kv.trueZ = kv.syncer.body_pose(ts) - kv.syncer.get_initial_pose()[0]
+
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueY) + draw_ofs_y
 
         cv2.circle(traj, (draw_x0, draw_y0), 1, (255, 0,0), 1)
