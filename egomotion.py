@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 import argparse
 import matplotlib.pyplot as plt
-from acsmeta import ImageImuSyncer
+from ImageImuSyncer import ImageImuSyncer
 
 from utils import *
 from cfg import *
@@ -746,7 +746,7 @@ class EgoMotion:
             self.num_imgs  = len(self.camera_images[0])
             self.num_cams = len(self.camera_images)
         elif self.dataset.lower() == 'kite':
-            self.camera_images = get_kite_image_files(input_path, data_seq, num_cams, KITE_VIDEO_FORMAT)
+            self.camera_images = get_kite_image_files(input_path, KITE_VIDEO_FORMAT)
             self.num_imgs  = len(self.camera_images)
             self.num_cams = 4
             self.syncer = ImageImuSyncer(ACS_META, INPUT_IMAGE_PATH)
@@ -1059,15 +1059,18 @@ class EgoMotion:
         
         x0 = np.vstack([rot0, trans0])
 
-        if not self.prev_invalid:
+        if not self.prev_invalid and 0:
             x0 = self.prev_egomotion.reshape(6,1)
-            
-        if ts is not None and self.syncer is not None:
+
+        elif ts is not None and self.syncer is not None:
             wv, vv = self.syncer.body_velocity_from_one_pose(ts)
             if wv is not None and vv is not None:
                 time_diff = ts - self.prev_ts
-                time_diff /= 1e6
-                time_diff = min(0.04, time_diff)
+
+                print('xxxxxxxxxxxxxxx', time_diff, ts, self.prev_ts)
+
+                time_diff = min(0.15, time_diff / 1e6)
+                # import pdb; pdb.set_trace()
                 acs_rot_est = angular_velocity_to_rotation_matrix(wv, time_diff)
                 acs_trans_est = linear_velocity_to_translation(vv, time_diff)
                 acs_rot_est_aa = cv2.Rodrigues(acs_rot_est)[0]
@@ -1081,7 +1084,7 @@ class EgoMotion:
                 x0 = np.vstack([rotation_aa, translation0])
                 # import pdb; pdb.set_trace()
 
-
+        self.prev_ts = ts
         json_data = {}
         json_data['egomotion'] = {}
         json_data['egomotion']['initial'] = x0.ravel().tolist()
@@ -1186,12 +1189,11 @@ class EgoMotion:
         try:
             res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), jac_sparsity=sparse_A, **LS_PARMS)
         except:
-            import pdb; pdb.set_trace()
+            return self.pose_R, self.pose_t
         
         err1 = self.global_fun(res.x, cam_obs, y_meas, cam_list)
 
         if res is None:
-            import pdb; pdb.set_trace()
             return self.ego_R, self.ego_t
 
         t1 = datetime.now()

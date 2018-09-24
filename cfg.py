@@ -1,6 +1,6 @@
 import numpy as np
 
-CAMERA_LIST = [0, 1, 2]
+CAMERA_LIST = [0, 1]
 
 
 # configs for KITTI dataset
@@ -12,16 +12,16 @@ if DATASET == 'kitti':
     INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
 else:
     # configs for KITI dataset
-    KITE_VIDEO_FORMAT = '1x1' # 2x2, 4x1, 1x1
-    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/cap1'
+    KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
+    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap3'
     INPUT_CALIB_PATH ='/home/jzhang/vo_data/SR80_901020874/nav_calib.cfg'
-    ACS_META = '/home/jzhang/vo_data/SR80_901020874/cap1/acsmeta0.csv'
+    ACS_META = ['/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/2018-09-24-flight_001/aeryon_journal_log']
     KITE_UNDISTORION_NEEDED = True
 
 IMU_TO_BODY_ROT = np.array([0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0, 1]).reshape(3, 3)
 
 # Features for egomotion
-AVG_REPROJECTION_ERROR = 0.65
+AVG_REPROJECTION_ERROR = 2
 USE_01_FEATURE = False
 DEBUG_KEYPOINTS = False
 

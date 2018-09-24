@@ -392,9 +392,9 @@ def read_kite_image(camera_images, num_cams=None, video_format='2x2',img_idx=0):
         imgs_x4 = kite_read_4x_images(camera_images[img_idx])
     else:
         assert(0)
-    ts = float(camera_images[img_idx][0].split('/')[-1].split('.')[0])
-    ts = ts / 1e3
-    return imgs_x4, int(ts)
+    ts = int(camera_images[img_idx].split('/')[-1].split('.')[0])
+    # import pdb; pdb.set_trace()
+    return imgs_x4, ts
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
     seq_path =  os.path.join(kitti_base, 'sequences')
@@ -423,13 +423,13 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
         resized_im = im.resize(target_size, Image.BICUBIC);
         resized_im.save(im_name)
 
-def get_kite_image_files(kite_base=None, data_seq=None, num_cam=4, video_format = '2x2'):
+def get_kite_image_files(kite_base=None, video_format = '2x2'):
     if video_format == '1x1':
         x4_imgs = sync_navcam_collected_images(kite_base)
         return x4_imgs 
 
     img_files = sorted(glob.glob(kite_base + '/*.jpg'))
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     return img_files 
 
 def load_kitti_poses(cfg_file=None):
@@ -600,6 +600,7 @@ def split_kite_vertical_images(img_file, num_cams=4):
     splited_images    = num_cams * [None]
     for i in range(num_cams):
         splited_images[i] = np.asarray(im.crop((0, im_height * i, im_width, im_height * (i + 1))))
+        splited_images[i] =cv2.cvtColor(splited_images[i], cv2.COLOR_RGB2GRAY)
     return splited_images
 
 
