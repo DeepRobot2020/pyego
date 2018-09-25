@@ -1066,9 +1066,7 @@ class EgoMotion:
             wv, vv = self.syncer.body_velocity_from_one_pose(ts)
             if wv is not None and vv is not None:
                 time_diff = ts - self.prev_ts
-
                 print('xxxxxxxxxxxxxxx', time_diff, ts, self.prev_ts)
-
                 time_diff = min(0.15, time_diff / 1e6)
                 # import pdb; pdb.set_trace()
                 acs_rot_est = angular_velocity_to_rotation_matrix(wv, time_diff)
@@ -1286,8 +1284,17 @@ def _main(args):
 
     kv = EgoMotion(**em_pars)
 
-    traj = np.zeros((1500, 1500, 3), dtype=np.uint8)
+    traj = np.zeros((960, 1280, 3), dtype=np.uint8)
 
+    text = "FC Estimated Position (ACS_METADATA)"
+    cv2.line(traj,(800, 78),(850, 78),(255,255,255),2)
+    cv2.putText(traj, text, (875, 85), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+
+    text = "4x Navgatiom Cameas + IMU"
+    cv2.line(traj,(800, 98),(850, 98),EGOMOTION_TRAJ_COLOR,2)
+    cv2.putText(traj, text, (875, 105), cv2.FONT_HERSHEY_PLAIN, 1, EGOMOTION_TRAJ_COLOR, 1, 8)
+
+    traj_index = 0
     json_pose = None
     n_json_pose = 0
     if external_json_pose:
@@ -1348,8 +1355,8 @@ def _main(args):
         print('Estimated', x, y, z)
         print('===================')
 
-        draw_ofs_x = 500
-        draw_ofs_y = 550
+        draw_ofs_x = 750
+        draw_ofs_y = 450
         if DATASET == 'kitti':
             draw_x0, draw_y0 = int(x) + draw_ofs_x, int(z) + draw_ofs_y    
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueZ) + draw_ofs_y
@@ -1361,25 +1368,25 @@ def _main(args):
 
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueY) + draw_ofs_y
 
-        cv2.circle(traj, (draw_x0, draw_y0), 1, (255, 0,0), 1)
-        cv2.circle(traj, (true_x,true_y), 1, (255,255,255), 2)
-        cv2.rectangle(traj, (10, 20), (600, 60), (0,0,0), -1)
-        text = "Img:%3d, Coordinates: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x, y, z)
-        cv2.putText(traj, text, (20,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+        cv2.circle(traj, (draw_x0, draw_y0), 1, EGOMOTION_TRAJ_COLOR, 1)
+        cv2.circle(traj, (true_x,true_y), 1, GT_TRAJ_COLOR, 2)
+
+        cv2.rectangle(traj, (780, 0), (1280, 50), (0,0,0), -1)
+        text = "Image:%2d, NED: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x, y, z)
+        cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
         img_bgr = []
         for i in range(len(CAMERA_LIST)):
-            img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (640, 480))
+            img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (320, 240))
             img_bgr.append(img)
         img_ = concat_images_list(img_bgr)
-        cv2.imshow('Navigation cameras', img_)
 
-        cv2.imshow('Trajectory' + seq, traj)
-        cv2.waitKey(1)
-    traj_name = 'seq_' + seq + '_' + datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + '.png'
-    cv2.imwrite(os.path.join(output_path, traj_name), traj)
+        h1, w1 = img_.shape[:2]
+        traj[:h1, :w1,:3] = img_
+        traj_name = str(traj_index) + '.jpg'
+        traj_index += 1
+        cv2.imwrite(os.path.join(output_path, traj_name), traj)
 
-    
 
 if __name__ == '__main__':
     _main(parser.parse_args())

@@ -24,7 +24,6 @@ ACS_ORIENTATION_THETA_DOT = 12
 ACS_ORIENTATION_PSI_DOT   = 13
 
 
-
 class ImageImuSyncer:
     def __init__(self, acsmeta_logs, image_path, image_format = '4x1', start_timestamp = -1):
         self.image_path = image_path
@@ -81,8 +80,6 @@ class ImageImuSyncer:
         # angular and linear velocity 
         w = [0.0, 0.0, 0.0]; v = [0.0, 0.0, 0.0];
         for ts in range(image_ts_index - 1, max(0, image_ts_index - 50), -1):
-            # import pdb; pdb.set_trace()
-            # import pdb; pdb.set_trace()
             key = self.sorted_dict_keys[ts]
             self.data_dict[self.sorted_dict_keys[ts]]
             if isinstance(self.data_dict[key], np.ndarray) is True or isinstance(self.data_dict[key], list) is True:

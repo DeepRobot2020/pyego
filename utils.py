@@ -183,8 +183,8 @@ def concat_images(imga, imgb):
     return new_img
 
 def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
-    descriptor = cv2.ORB_create()
-    # descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
+    # descriptor = cv2.ORB_create()
+    descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
     for i in range(k0.shape[0]):
         if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
             continue
