@@ -183,8 +183,8 @@ def concat_images(imga, imgb):
     return new_img
 
 def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
-    # descriptor = cv2.ORB_create()
-    descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
+    descriptor = cv2.ORB_create()
+    # descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
     for i in range(k0.shape[0]):
         if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
             continue
@@ -423,13 +423,14 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
         resized_im = im.resize(target_size, Image.BICUBIC);
         resized_im.save(im_name)
 
-def get_kite_image_files(kite_base=None, video_format = '2x2'):
+def get_kite_image_files(kite_base=None, video_format = '2x2', skip_images_factor = 0):
     if video_format == '1x1':
         x4_imgs = sync_navcam_collected_images(kite_base)
         return x4_imgs 
 
     img_files = sorted(glob.glob(kite_base + '/*.jpg'))
-    # import pdb; pdb.set_trace()
+    if skip_images_factor > 0:
+        img_files = img_files[::skip_images_factor]
     return img_files 
 
 def load_kitti_poses(cfg_file=None):
@@ -644,9 +645,9 @@ def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (18, 18)):
         return None, None, None
     # Parameters for lucas kanade optical flow
     lk_params = dict( winSize  = win_size,
-                    maxLevel = 5,
+                    maxLevel = 4,
                     minEigThreshold=1e-4,
-                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 6, 0.01))
+                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 4, 0.01))
     # perform a forward match
     flow_kpt1, st, err = cv2.calcOpticalFlowPyrLK(curr_im, target_im, flow_kpt0, None, **lk_params)
     # perform a reverse match

@@ -13,11 +13,11 @@ if DATASET == 'kitti':
 else:
     # configs for KITI dataset
     KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
-    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap3'
+    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap1'
     INPUT_CALIB_PATH ='/home/jzhang/vo_data/SR80_901020874/nav_calib.cfg'
     ACS_META = ['/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/2018-09-24-flight_001/aeryon_journal_log']
     KITE_UNDISTORION_NEEDED = True
-
+    KITE_SKIP_IMAGE_FACTOR = 0
 
 EGOMOTION_TRAJ_COLOR = (0, 255, 0)
 GT_TRAJ_COLOR = (255, 255, 255)
@@ -25,15 +25,15 @@ GT_TRAJ_COLOR = (255, 255, 255)
 IMU_TO_BODY_ROT = np.array([0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0, 1]).reshape(3, 3)
 
 # Features for egomotion
-AVG_REPROJECTION_ERROR = 0.5
-USE_01_FEATURE = False
-DEBUG_KEYPOINTS = False
+AVG_REPROJECTION_ERROR = 1.0
+USE_01_FEATURE = True
+DEBUG_KEYPOINTS = True
 
 KITE_KPTS_PATH = '/tmp/kite/'
 
 SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
-MAX_NUM_KEYPOINTS = 64 
+MAX_NUM_KEYPOINTS = 96 
 SCIPY_LS_VERBOSE_LEVEL = 0
 
 FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
