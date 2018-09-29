@@ -3,26 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from utils import get_kite_image_files
-
-TX2_TIMESTAMP_INDEX = 0
-DSP_TIMESTAMP_INDEX = 1
-
-ACS_POSITION_X     = 2
-ACS_POSITION_Y     = 3
-ACS_POSITION_Z     = 4
-
-ACS_POSITION_X_DOT = 5
-ACS_POSITION_Y_DOT = 6
-ACS_POSITION_Z_DOT = 7
-
-ACS_ORIENTATION_PHI       = 8
-ACS_ORIENTATION_THETA     = 9
-ACS_ORIENTATION_PSI       = 10
-
-ACS_ORIENTATION_PHI_DOT   = 11
-ACS_ORIENTATION_THETA_DOT = 12
-ACS_ORIENTATION_PSI_DOT   = 13
-
+from cfg import *
 
 class ImageImuSyncer:
     def __init__(self, acsmeta_logs, image_path, image_format = '4x1', start_timestamp = -1):
@@ -56,25 +37,6 @@ class ImageImuSyncer:
             self.data_dict[key] = camera_images[i]
         self.sorted_dict_keys  = np.array(sorted(self.data_dict.keys()))
 
-    def body_velocity_from_two_poses(self, image_ts):
-        image_ts_index = np.where(self.sorted_dict_keys == image_ts)[0][0]
-        
-        # find two acs_metata message before the timestmap of current image
-        acs_message = []
-        for ts in range(image_ts_index - 1, image_ts_index - 11, -1):
-            # import pdb; pdb.set_trace()
-            key = self.sorted_dict_keys[ts]
-            if isinstance(self.data_dict[key], list):
-                acs_message.append((self.data_dict[key]))
-            if len(acs_message) == 2:
-                time_diff    = float(acs_message[0][0]) - float(acs_message[1][0]) 
-                position1    = np.array([acs_message[0][1], acs_message[0][2], acs_message[0][3]], dtype=np.float32)
-                position0    = np.array([acs_message[1][1], acs_message[1][2], acs_message[1][3]], dtype=np.float32)
-                orientation1 = np.array([acs_message[0][7], acs_message[0][8], acs_message[0][9]], dtype=np.float32)
-                orientation0 = np.array([acs_message[1][7], acs_message[1][8], acs_message[1][9]], dtype=np.float32)
-                break
-        return np.eye(3)
-
     def body_velocity_from_one_pose(self, image_ts):
         image_ts_index = np.where(self.sorted_dict_keys == image_ts)[0][0]
         # angular and linear velocity 
@@ -89,7 +51,7 @@ class ImageImuSyncer:
                 return w, v
         return None, None
 
-    def body_pose(self, image_ts):
+    def find_closest_acs_metadata(self, image_ts):
         image_ts_index = np.where(self.sorted_dict_keys == image_ts)[0][0]
         
         for ts in range(image_ts_index - 1, max(0, image_ts_index - 100), -1):
@@ -97,8 +59,7 @@ class ImageImuSyncer:
             key = self.sorted_dict_keys[ts]
             if isinstance(self.data_dict[key], np.ndarray) is True or isinstance(self.data_dict[key], list) is True:
                 msg = self.data_dict[key]
-                pose = np.array([msg[ACS_POSITION_X], msg[ACS_POSITION_Y], msg[ACS_POSITION_Z]], dtype=np.float32)
-                return pose
+                return np.array(msg, dtype=np.float32)
         return None
     
     def get_initial_pose(self):

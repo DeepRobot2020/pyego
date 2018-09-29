@@ -8,6 +8,13 @@ from scipy.sparse import lil_matrix
 from numpy.linalg import inv, norm
 from pyquaternion import Quaternion
 
+import numpy as np
+import matplotlib.pyplot as plt
+import pytransform.rotations as pr
+import pytransform.transformations as pt
+from pytransform.transform_manager import TransformManager
+
+from cfg import *
 
 ''' Util functions '''
 
@@ -946,17 +953,15 @@ def compute_body_to_camera0_transformation(imu_to_body_rotation=np.eye(3), rotat
         imu_to_camera0_rotation {[type]} -- [description] (default: {np.eye(3)})
         imu_to_camera0_translation {[type]} -- [description] (default: {np.zeros([3, 1])})
     '''
-    
-    rotation_acs_to_imu = imu_to_body_rotation.transpose()
-    rotation_acs_to_cam0 = np.dot(rotation_imu_to_cam0, rotation_acs_to_imu)
-
-    translation_acs_to_cam0 = translation_imu_to_camera0
-    return rotation_acs_to_cam0, translation_acs_to_cam0
+    rotation_body_to_cam0 = np.dot(rotation_imu_to_cam0,  imu_to_body_rotation.T)
+    translation_body_to_cam0 = translation_imu_to_camera0
+    return rotation_body_to_cam0, translation_body_to_cam0
 
 def transform_egomotion_from_frame_a_to_b(egomotion_rotation_a, egomotion_translation_a, rotation_a_to_b, translation_a_to_b):
     '''Transform egomotion from frame a to b
     '''
-    egomotion_rotation_b = np.dot(rotation_a_to_b, np.dot(egomotion_rotation_a, rotation_a_to_b.T))
+    egomotion_rotation_b = rotation_a_to_b.dot(egomotion_rotation_a.dot(rotation_a_to_b.T))
+
     # Compute the translation
     egomotion_translation_b =  np.dot((np.eye(3) - egomotion_rotation_b), translation_a_to_b)
     egomotion_translation_b +=  np.dot(rotation_a_to_b, egomotion_translation_a)
@@ -978,7 +983,70 @@ def angular_velocity_to_rotation_matrix(w = [0.0, 0.0, 0.0], dt = 0.0):
 
 
 def linear_velocity_to_translation(v = [0.0, 0.0, 0.0], dt = 0.0):
-    vx, vy, vz = v[0], v[1], v[2]
-    x = vx *dt; y = vy * dt; z = vz * dt;
-    return np.array([x, y, z]).reshape(3, 1)
+    return np.array([v[0]*dt, v[1]*dt, v[2]*dt]).reshape(3, 1)
+
+# ref
+# http://danceswithcode.net/engineeringnotes/rotations_in_3d/rotations_in_3d_part1.html
+def eular_angle_to_rotation_matrix(eular):
+    u = eular[0]; v = eular[1]; w = eular[2];
+    cu = math.cos(u); su = math.sin(u);
+    cv = math.cos(v); sv = math.sin(v);
+    cw = math.cos(w); sw = math.sin(w);
+
+
+    m00 = cu * cw
+    m01 = su * sv * cw - cu * sw
+    m02 = su * sw + cu * sv * cw;
+
+    m10 = cv * sw
+    m11 = cu * cw + su * sv * sw
+    m12 = cu * sv * sw - su * cw 
+
+    m20 = -sv
+    m21 = su * cv 
+    m22 = cu * cv 
+    return np.array([m00, m01, m02, m10, m11, m12, m20, m21, m22]).reshape(3,3)
+
+
+def eulerAnglesToRotationMatrix(theta) :
+     
+    R_x = np.array([[1,         0,                  0                   ],
+                    [0,         math.cos(theta[0]), -math.sin(theta[0]) ],
+                    [0,         math.sin(theta[0]), math.cos(theta[0])  ]
+                    ])
+
+    R_y = np.array([[math.cos(theta[1]),    0,      math.sin(theta[1])  ],
+                    [0,                     1,      0                   ],
+                    [-math.sin(theta[1]),   0,      math.cos(theta[1])  ]
+                    ])
+                 
+    R_z = np.array([[math.cos(theta[2]),    -math.sin(theta[2]),    0],
+                    [math.sin(theta[2]),    math.cos(theta[2]),     0],
+                    [0,                     0,                      1]
+                    ])
+                     
+                     
+    R = np.dot(R_z, np.dot( R_y, R_x ))
+    return R
+
+def get_translation_from_acsmeta(msg):
+    return np.array([msg[ACS_POSITION_X], msg[ACS_POSITION_Y], msg[ACS_POSITION_Z]], dtype=np.float32).reshape(3,1)
+
+def get_eular_angle_from_acsmeta(msg):
+    return np.array([msg[ACS_ORIENTATION_PHI], msg[ACS_ORIENTATION_THETA], msg[ACS_ORIENTATION_PSI]], dtype=np.float32)
+
+
+def get_position_orientation_from_acsmeta(msg):
+    translation = get_translation_from_acsmeta(msg)
+    rotation_eular = get_eular_angle_from_acsmeta(msg)
+    # rotation_3x3 = pr.matrix_from_euler_zyx(rotation_eular)
+    rotation_3x3 = eulerAnglesToRotationMatrix(rotation_eular)
+    # import pdb; pdb.set_trace()
+    return [rotation_3x3, translation]
+
+def get_angular_linear_velocity_from_acsmeta(msg):
+    w = np.array([msg[ACS_ORIENTATION_PHI_DOT], msg[ACS_ORIENTATION_THETA_DOT], msg[ACS_ORIENTATION_PSI_DOT]], dtype=np.float32).reshape(3,1)
+    v = np.array([msg[ACS_POSITION_X_DOT], msg[ACS_POSITION_Y_DOT], msg[ACS_POSITION_Z_DOT]], dtype=np.float32).reshape(3,1)
+    return [w, v]
+    
 

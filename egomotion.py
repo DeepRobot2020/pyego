@@ -626,6 +626,8 @@ class EgoMotion:
         self.prev_invalid = True
         self.syncer = None
         self.prev_ts = 0
+        self.prev_acsmeta = None
+        self.curr_acsmeta = None
 
         if self.dataset.lower() == 'kitti':
             self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
@@ -643,20 +645,20 @@ class EgoMotion:
         mtx, dist, rot, trans, imu_rot, imu_trans = load_camera_calib(dataset, calib_file, num_cams)
 
         if self.dataset.lower() == 'kite':
-            rotation_acs_to_cam0, translation_acs_to_cam0 = compute_body_to_camera0_transformation(IMU_TO_BODY_ROT, imu_rot[0], imu_trans[0])
-            self.rotation_acs_to_cam0 = rotation_acs_to_cam0
-            self.translation_acs_to_cam0 = translation_acs_to_cam0
+            self.rotation_body_to_cam0, self.translation_body_to_cam0 = compute_body_to_camera0_transformation(IMU_TO_BODY_ROT, imu_rot[0], imu_trans[0])
         else:
-            self.rotation_acs_to_cam0 = np.eye(3)
-            self.translation_acs_to_cam0 = np.zeros((3,1))
+            self.rotation_body_to_cam0 = np.eye(3)
+            self.translation_body_to_cam0 = np.zeros((3,1))
 
-        self.rotation_cam0_to_acs, self.translation_cam0_to_acs = invert_RT(self.rotation_acs_to_cam0, self.translation_acs_to_cam0)
+        self.rotation_cam0_to_body, self.translation_cam0_to_body = invert_RT(self.rotation_body_to_cam0, self.translation_body_to_cam0)
 
+        # import pdb; pdb.set_trace()
         # From nav_calib.cfg
         # Camera trans/rot prev camera to camera. Camera 0 is the first in the chain.
         # IMU trans/rot is imu to camera.
         # Convert the chained calibration cam0 -> cam1 -> cam2 -> cam3
         # to two stereo pair calibration: cam0 -> cam1, cam2 -> cam3
+
         rot_01, trans_01 = rot[1], trans[1]
         rot_10, trans_10 = invert_RT(rot[1], trans[1])
 
@@ -693,9 +695,11 @@ class EgoMotion:
         self.ego_R = cv2.Rodrigues(np.eye(3))[0]
         self.ego_t = np.zeros([3, 1])
 
-        self.pose_R = np.eye(3)
-        # import pdb; pdb.set_trace()
-        self.pose_t = self.syncer.get_initial_pose()[1].reshape(3, 1)
+        body_to_world_trans, body_to_world_eular_xyz = self.syncer.get_initial_pose()
+        self.initial_origin = body_to_world_trans
+
+        self.pose_R = eulerAnglesToRotationMatrix(body_to_world_eular_xyz)
+        self.pose_t = np.zeros((3, 1))
 
         # Compute the fundamental matrix
         for left in range(self.num_cams):
@@ -758,11 +762,38 @@ class EgoMotion:
         for c in range(self.num_cams):
             self.navcams[c].filter_keypoints(debug=debug)
 
-    def upload_images(self, imgs_x4):
+    def upload_images_acsmeta(self, imgs_x4, ts):
         self.img_idx += 1
         for c in range(self.num_cams):        
-            self.navcams[c].update_image(imgs_x4)
+            self.navcams[c].update_image(imgs_x4)        
+        if ts is not None:
+            self.prev_acsmeta = self.curr_acsmeta
+            self.curr_acsmeta = self.syncer.find_closest_acs_metadata(ts)
 
+    def compute_acsmeta_transformation_1_to_0(self):
+        if self.curr_acsmeta is None or self.prev_acsmeta is None:
+            return None
+        # transformation at time t0 and t1 with respect to takeoff NED
+        Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
+        Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+
+        r1_inv, t1_inv = invert_RT(Rw1, tw1)
+
+        rotation_0_to_1 = r1_inv.dot(Rw0)
+        translation_0_to_1 = r1_inv.dot(tw0) + t1_inv
+        
+        time_diff = (self.curr_acsmeta[1] - self.prev_acsmeta[1]) / 1e3
+        # Convert the transformation to '1 to 0'
+        rotation, translation = invert_RT(rotation_0_to_1, translation_0_to_1)
+    
+        return rotation, translation, time_diff
+
+    def get_acsmeta_pose(self):
+        if self.curr_acsmeta is None:
+            return np.array([0, 0, 0])
+        _, translation = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+        return translation
+        
     def read_one_image(self, img_idx):
         ts = -1 
         if self.dataset == 'kitti':
@@ -876,7 +907,7 @@ class EgoMotion:
                     cost_err = flow013_errs
                 else:
                     cost_err = np.vstack([cost_err, flow013_errs])
-                # plt.plot(cost_err.ravel()); plt.show()
+                # plt.plot(flow013_errs.ravel()); plt.show()
                 # import pdb ; pdb.set_trace()
 
             if n_obj_01 > 0:
@@ -935,6 +966,14 @@ class EgoMotion:
         cam_obs = np.zeros([num_cams, 2], dtype=np.int)
         y_meas = None
 
+        time_diff_image = (ts - self.prev_ts) / 1e6
+        time_diff = min(0.1, time_diff_image)
+
+        Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
+        Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+
+        angular_vel0, linear_vel_ned0 = get_angular_linear_velocity_from_acsmeta(self.curr_acsmeta)
+
         if DATASET == 'kitti':
             # Estimate each camera's local egomotion by 5 point algorithm   
             rot0, trans0, camera_index, rot_list, trans_list = self.get_initial_egomotion_from_mono_estimation(cam_list)
@@ -946,26 +985,28 @@ class EgoMotion:
         else:
             if not self.prev_invalid and 0:
                 x0 = self.prev_egomotion.reshape(6,1)
-
             elif ts is not None and self.syncer is not None:
-                wv, vv = self.syncer.body_velocity_from_one_pose(ts)
-                if wv is not None and vv is not None:
-                    time_diff = ts - self.prev_ts
-                    print('xxxxxxxxxxxxxxx', time_diff, ts, self.prev_ts)
-                    time_diff = min(0.1, time_diff / 1e6)
-                    # import pdb; pdb.set_trace()
-                    acs_rot_est = angular_velocity_to_rotation_matrix(wv, time_diff)
-                    acs_trans_est = linear_velocity_to_translation(vv, time_diff)
-                    acs_rot_est_aa = cv2.Rodrigues(acs_rot_est)[0]
+                if angular_vel0 is not None and linear_vel_ned0 is not None:
 
-                    rotation0, translation0 = transform_egomotion_from_frame_a_to_b(acs_rot_est, 
-                                                                                    acs_trans_est, 
-                                                                                    self.rotation_acs_to_cam0, 
-                                                                                self.translation_acs_to_cam0)
-                    rotation_aa = cv2.Rodrigues(rotation0)[0]
+                    body_rotation_estimation1, body_trans_estimation1, time_diff_pose = self.compute_acsmeta_transformation_1_to_0()
+                    angular_vel1 = cv2.Rodrigues(body_rotation_estimation1)[0] / time_diff_pose
+                    linear_vel1 = body_trans_estimation1 / time_diff_pose
+
+                    linear_vel0 = Rw0.T.dot(linear_vel_ned0)
+
+                    body_rotation_estimation0 = angular_velocity_to_rotation_matrix(angular_vel0, time_diff)
+                    body_trans_estimation0 = linear_velocity_to_translation(linear_vel0, time_diff)  
+                    # body_rotation_estimation0, body_trans_estimation0 = invert_RT(body_rotation_estimation0, body_trans_estimation0)
+
+                    # body_rot_est_vel_aa = cv2.Rodrigues(body_rot_est_vel)[0]
                     # import pdb; pdb.set_trace()
-                    x0 = np.vstack([rotation_aa, translation0])
-                    # import pdb; pdb.set_trace()
+                    # Conver body transformation from 1 to 0 to camera0
+                    rotation0, translation0 = transform_egomotion_from_frame_a_to_b(body_rotation_estimation0, 
+                        body_trans_estimation0, 
+                        self.rotation_body_to_cam0, 
+                        self.translation_body_to_cam0)
+
+                    x0 = np.vstack([cv2.Rodrigues(rotation0)[0], translation0])
 
         self.prev_ts = ts
         json_data = {}
@@ -1114,19 +1155,28 @@ class EgoMotion:
 
         t = t.reshape(3,1)
 
-        acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rotation_cam0_to_acs, self.translation_cam0_to_acs)
+        acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rotation_cam0_to_body, self.translation_cam0_to_body)
         acs_rot_aa = cv2.Rodrigues(acs_rot)[0]
         
         # Note: the actual egomotion should be inverted as we estimate R,t from current feature to previous 
         # R, t = invert_RT(R, t)
         avg_reprojection_err = reprojection_err / float(np.sum(cam_obs))
 
+
+        angular_vel1 = acs_rot_aa  / time_diff
+        linear_vel_ned1 = Rw0.dot((acs_trans / time_diff).reshape(3,1))
+        
         print('img:' + str(self.navcams[0].img_idx), 
               'rot0 [%.3f, %.3f, %.3f]' % (rot0[0], rot0[1], rot0[2]),  
               'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
               'rot1 [%.3f, %.3f, %.3f]' % (res.x[0], res.x[1], res.x[2]),  
               'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
-              'proj_err', reprojection_err, avg_reprojection_err)
+              'proj_err [%.3f, %.3f]' % (reprojection_err, avg_reprojection_err))
+
+
+        print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (angular_vel0[0], angular_vel0[1], angular_vel0[2], angular_vel1[0], angular_vel1[1], angular_vel1[2]),
+              'linear_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (linear_vel_ned0[0], linear_vel_ned0[1], linear_vel_ned0[2], linear_vel_ned1[0], linear_vel_ned1[1], linear_vel_ned1[2]))
+
 
         if avg_reprojection_err > AVG_REPROJECTION_ERROR:
             self.prev_invalid = True
@@ -1135,6 +1185,13 @@ class EgoMotion:
         
         self.prev_egomotion = res.x[0:6]
         self.prev_invalid = False
+
+        self.fc_angular_velocity = angular_vel0
+        self.fc_linear_velocity = linear_vel_ned0
+
+        self.est_angular_velocity = angular_vel1
+        self.est_linear_velocity = linear_vel_ned1
+
         pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
         return pose_R, pose_t 
         
@@ -1173,7 +1230,7 @@ def _main(args):
     cv2.line(traj,(800, 78),(850, 78),(255,255,255),2)
     cv2.putText(traj, text, (875, 85), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
-    text = "4x Navgatiom Cameas + IMU"
+    text = "4x Navgatiom Cameas Seed By FC"
     cv2.line(traj,(800, 98),(850, 98),EGOMOTION_TRAJ_COLOR,2)
     cv2.putText(traj, text, (875, 105), cv2.FONT_HERSHEY_PLAIN, 1, EGOMOTION_TRAJ_COLOR, 1, 8)
 
@@ -1196,7 +1253,7 @@ def _main(args):
         camera_images, ts = kv.read_one_image(img_id)
         if camera_images == None:
             continue
-        kv.upload_images(camera_images)
+        kv.upload_images_acsmeta(camera_images, ts)
         
         if external_json_pose:
             if img_id < 1:
@@ -1245,10 +1302,11 @@ def _main(args):
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueZ) + draw_ofs_y
         else:
             draw_x0, draw_y0 = int(x) + draw_ofs_x, int(y) + draw_ofs_y  
-            current_true_pose = kv.syncer.body_pose(ts)
-            if current_true_pose is not None:
-                kv.trueX, kv.trueY, kv.trueZ = kv.syncer.body_pose(ts) - kv.syncer.get_initial_pose()[0]
+            current_true_pose = kv.get_acsmeta_pose()
 
+            if current_true_pose is not None:
+                global_positon = current_true_pose.reshape(1,3) - kv.initial_origin.reshape(1,3)
+                kv.trueX, kv.trueY, kv.trueZ = global_positon.reshape(-1,)
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueY) + draw_ofs_y
 
         cv2.circle(traj, (draw_x0, draw_y0), 1, EGOMOTION_TRAJ_COLOR, 1)
@@ -1257,6 +1315,9 @@ def _main(args):
         cv2.rectangle(traj, (780, 0), (1280, 50), (0,0,0), -1)
         text = "Image:%2d, NED: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x, y, z)
         cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+
+        # text = "FC AngVel: roll=%.2f pitch=%.2f yaw=%.2f"%(img_id, x, y, z)
+        # cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
         img_bgr = []
         for i in range(len(CAMERA_LIST)):
