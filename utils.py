@@ -10,9 +10,6 @@ from pyquaternion import Quaternion
 
 import numpy as np
 import matplotlib.pyplot as plt
-import pytransform.rotations as pr
-import pytransform.transformations as pt
-from pytransform.transform_manager import TransformManager
 
 from cfg import *
 
@@ -79,56 +76,57 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
     w = image_shape[0]
     h = image_shape[1]
     corners = []
-    corners.append(np.array([w / 2, 0]))
-    corners.append(np.array([w,  h / 2]))
-    corners.append(np.array([w / 2,  h]))
-    corners.append(np.array([0,  h / 2]))
+    corners.append(np.array([w / 2.0, 0]))
+    corners.append(np.array([w,  h / 2.0]))
+    corners.append(np.array([w / 2.0,  h]))
+    corners.append(np.array([0,  h / 2.0]))
     corners = np.array(corners, dtype=np.float32)
     corners = corners.reshape(len(corners), 1, 2)
+
     # corners = cv2.fisheye.undistortPoints(corners, K, D, np.eye(3))
     corners = kiteFishEyeUndistortPoints(corners, K, D, np.eye(3)) 
 
     center_mass = np.mean(corners)
     cn = np.array([center_mass, center_mass])
 
+    aspect_ratio = K[0][0] / K [1][1]
+    cn[0] *= aspect_ratio
+    corners[:,0,1] *= aspect_ratio
+
+
     miny = np.min(corners[:,:,1])
     maxy = np.max(corners[:,:,1])
     minx = np.min(corners[:,:,0])
     maxx = np.max(corners[:,:,0])
-
-    aspect_ratio = K[0][0] / K [1][1]
-
-    cn[0] *= aspect_ratio
 
     f1 = w * 0.5 / (cn[0] - minx)
     f2 = w * 0.5 / (maxx - cn[0])
     f3 = h * 0.5 * aspect_ratio/(cn[1] - miny)
     f4 = h * 0.5 * aspect_ratio/(maxy - cn[1])
 
-
-
-
     fmin = min(f1, min(f2, min(f3, f4)))
     fmax = max(f1, max(f2, max(f3, f4)))
 
     f = balance * fmin + (1.0 - balance) * fmax
 
-    new_f = [f, f]
+
+    # import pdb; pdb.set_trace()
+
+    new_f = [f, f / aspect_ratio]
     new_c = -cn * f + np.array([w, h * aspect_ratio]) * 0.5
     # restore aspect ratio
-    new_f[1] /= aspect_ratio
     new_c[1] /= aspect_ratio
 
     new_K = np.array([new_f[0], 0.0, new_c[0], 
              0.0, new_f[1], new_c[1], 
              0.0, 0.0, 1.0]).reshape(3, 3)
 
-    print(new_K)
     return new_K
 
 def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
-    return kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
-    # return cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, dim, np.eye(3), balance=balance)
+    K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
+    # K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
+    return K0
 
 def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
     map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_org, D, np.eye(3), K_new, dim, cv2.CV_16SC2)
@@ -434,7 +432,6 @@ def get_kite_image_files(kite_base=None, video_format = '2x2', skip_images_facto
     if video_format == '1x1':
         x4_imgs = sync_navcam_collected_images(kite_base)
         return x4_imgs 
-
     img_files = sorted(glob.glob(kite_base + '/*.jpg'))
     if skip_images_factor > 0:
         img_files = img_files[::skip_images_factor]

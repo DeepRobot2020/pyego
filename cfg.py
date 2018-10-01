@@ -10,15 +10,21 @@ DATASET = 'kite'
 if DATASET == 'kitti':
     INPUT_IMAGE_PATH='/home/jzhang/vo_data/kitti/dataset/'
     INPUT_CALIB_PATH='/home/jzhang/vo_data/kitti/dataset/sequences/02/calib.txt'
+    EGOMOTION_SEED_OPTION = 0 # 0: 5 point algorithem
 else:
     # configs for KITI dataset
     KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
-    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap1'
+    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap3'
     INPUT_CALIB_PATH ='/home/jzhang/vo_data/SR80_901020874/nav_calib.cfg'
     ACS_META = ['/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/2018-09-24-flight_001/aeryon_journal_log']
     KITE_UNDISTORION_NEEDED = True
-    KITE_SKIP_IMAGE_FACTOR = 0
+    EGOMOTION_SEED_OPTION = 1 # 0: 5 point algorithem, 1: Velocity 2: Pose 3: prev
+    KITE_SKIP_IMAGE_FACTOR = 1 
+    # KITE_OUTPUT_POSE_PATH = '/tmp/kite/kv_egomotion.json'
+    # KITE_OUTPUT_POSE_PATH = '/tmp/avl.json'
+    KITE_OUTPUT_POSE_PATH = None
 
+PYEGO_DEBUG_OUTPUT = '/tmp/pyego'
 EGOMOTION_TRAJ_COLOR = (0, 255, 0)
 GT_TRAJ_COLOR = (255, 255, 255)
 
@@ -34,7 +40,7 @@ KITE_KPTS_PATH = '/tmp/kite/'
 
 SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
-MAX_NUM_KEYPOINTS = 96 
+MAX_NUM_KEYPOINTS = 64 
 SCIPY_LS_VERBOSE_LEVEL = 2
 
 FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
@@ -54,13 +60,13 @@ INTER_OPT_FLOW_EPILINE_ERROR_THRESHOLD = 5e-4
 
 
 # Constants to control the egomotion LS 
-LS_PARMS = dict(max_nfev=10, 
+LS_PARMS = dict(max_nfev=5, 
                 verbose=SCIPY_LS_VERBOSE_LEVEL,
                 x_scale='jac',
                 jac='2-point',
-                ftol=1e-7,
-                xtol=1e-7,
-                gtol=1e-7,
+                ftol=1e-5,
+                xtol=1e-5,
+                gtol=1e-5,
                 method='trf')
 
 

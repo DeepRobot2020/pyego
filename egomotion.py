@@ -87,7 +87,7 @@ parser.add_argument(
     '-json_pose',
     '--external_json_pose',
     help='Debug a extimated pose',
-    default=None)
+    default=KITE_OUTPUT_POSE_PATH)
 
 parser.add_argument(
     '-use_kite_kpts',
@@ -112,16 +112,16 @@ kt_cam = KTPinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
 
 class navcam:
     def __init__(self,  index, stereo_pair_idx, intrinsic_mtx,  intrinsic_dist,  extrinsic_rot, extrinsic_trans, num_features=64):
-        self.calib_d   = intrinsic_dist[0:4]
-        self.calib_K0  = intrinsic_mtx
-        self.calib_R   = extrinsic_rot
-        self.calib_R2  = cv2.Rodrigues(extrinsic_rot)[0]
-        self.calib_t   = extrinsic_trans
+        self.calib_d   = intrinsic_dist[0:4].astype(np.float32)
+        self.calib_K0  = intrinsic_mtx.astype(np.float32)
+        self.calib_R   = extrinsic_rot.astype(np.float32)
+        self.calib_R2  = cv2.Rodrigues(extrinsic_rot)[0].astype(np.float32)
+        self.calib_t   = extrinsic_trans.astype(np.float32)
 
         if DATASET == 'kite':  # focal lenght and princial point of kite navcam
             self.calib_K   = correct_kite_camera_matrix(intrinsic_mtx, self.calib_d)
             self.focal      = (self.calib_K[0,0] + self.calib_K[1,1]) / 2.0
-            self.pp         = (self.calib_K[:2,2][0], self.calib_K[:2,2][1])    
+            self.pp         = (self.calib_K[:2,2][0], self.calib_K[:2,2][1])  
         else: # focal lenght and princial point of kitti stereo cameras
             self.focal      = kt_cam.fx
             self.pp         = (kt_cam.cx, kt_cam.cy) 
@@ -676,8 +676,10 @@ class EgoMotion:
     
         if DATASET == 'kite':
             rot_12, trans_12 = rot[2], trans[2]
+            
             rot_02 = np.dot(rot_12, rot_01) 
             trans_02 = np.dot(rot_12, trans_01) + trans_12
+
             rot_20, trans_20 = invert_RT(rot_02,trans_02 ) 
             self.rotation_cam0_to_cam2 = rot_02
             self.translation_cam0_to_cam2 = trans_02
@@ -858,6 +860,8 @@ class EgoMotion:
                                                                                                   self.navcams[2].calib_R, 
                                                                                                   self.navcams[2].calib_t)
 
+        cv2.Rodrigues(rotation_camera1_frame)[0]
+
         for c in cam_list:
             if c == 0:
                 egomotion_rotation = rotation_camera0_frame
@@ -974,7 +978,7 @@ class EgoMotion:
 
         angular_vel0, linear_vel_ned0 = get_angular_linear_velocity_from_acsmeta(self.curr_acsmeta)
 
-        if DATASET == 'kitti':
+        if EGOMOTION_SEED_OPTION == 0:
             # Estimate each camera's local egomotion by 5 point algorithm   
             rot0, trans0, camera_index, rot_list, trans_list = self.get_initial_egomotion_from_mono_estimation(cam_list)
 
@@ -1065,7 +1069,6 @@ class EgoMotion:
                                            cur_cam.calib_R, 
                                            cur_cam.calib_t)
 
-                # import pdb ; pdb.set_trace()
                 flow013_z = np.vstack([flow0, flow1, flow3])
                 y_meas = flow013_z if y_meas is None else np.vstack([y_meas, flow013_z])
 
@@ -1262,14 +1265,17 @@ def _main(args):
             
             if img_id >= n_json_pose:
                 break
-            frame_name = 'frame' + str(img_id)
+            frame_name = 'pyframe' + str(img_id)
             try:
                 estimated_rt = json_pose[frame_name]['optimized']
                 R = np.array([estimated_rt[0:3]])
                 R = cv2.Rodrigues(R)[0]
-                t = np.array([estimated_rt[3:]])
+                t = np.array([estimated_rt[3:]]).reshape(3,1)
+                # import pdb; pdb.set_trace()
+                acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, kv.rotation_cam0_to_body, kv.translation_cam0_to_body)
+
                 print(frame_name, img_id, estimated_rt)
-                _, global_tr = kv.update_global_camera_pose_egomotion(R, t.reshape(3,1))
+                _, global_tr = kv.update_global_camera_pose_egomotion(acs_rot, acs_trans.reshape(3,1))
             except:
                 print('warning, no ' + frame_name + ' estimation from json')
                 global_tr = kv.pose_t
@@ -1281,7 +1287,7 @@ def _main(args):
      
             global_rot, global_tr = kv.egomotion_solver(img_id, ts,
                                                         cam_list=CAMERA_LIST, 
-                                                        debug_json_path='/tmp/pyego')
+                                                        debug_json_path=PYEGO_DEBUG_OUTPUT)
 
 
         if img_id == 0:
@@ -1315,9 +1321,6 @@ def _main(args):
         cv2.rectangle(traj, (780, 0), (1280, 50), (0,0,0), -1)
         text = "Image:%2d, NED: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x, y, z)
         cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-
-        # text = "FC AngVel: roll=%.2f pitch=%.2f yaw=%.2f"%(img_id, x, y, z)
-        # cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
         img_bgr = []
         for i in range(len(CAMERA_LIST)):
