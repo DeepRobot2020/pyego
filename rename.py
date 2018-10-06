@@ -2,8 +2,8 @@ import shutil, os
 from utils import *
 
 
-infolder = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap3'
-outfolder = '/home/jzhang/vo_data/SR80_901020874/Sep.24-Church/cap3_renamed'
+infolder = '/home/jzhang/vo_data/SR80_901020874/Oct.5/cap'
+outfolder = '/home/jzhang/vo_data/SR80_901020874/Oct.5/cap_renamed'
 
 
 

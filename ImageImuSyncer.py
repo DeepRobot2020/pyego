@@ -27,8 +27,8 @@ class ImageImuSyncer:
                     data = row.split('|')[-1].split(',')
                     key = int(float(data[0]))
                     self.data_dict[key] = data
+
         camera_images = get_kite_image_files(self.image_path, self.image_format)
-        # import pdb; pdb.set_trace()
         print('num_images', len(camera_images), 'num_acsmeta', len(self.data_dict.keys()))
 
         for i in range(len(camera_images)):
@@ -36,6 +36,7 @@ class ImageImuSyncer:
             key = int(float(ts))
             self.data_dict[key] = camera_images[i]
         self.sorted_dict_keys  = np.array(sorted(self.data_dict.keys()))
+
 
     def body_velocity_from_one_pose(self, image_ts):
         image_ts_index = np.where(self.sorted_dict_keys == image_ts)[0][0]

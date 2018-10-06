@@ -331,16 +331,19 @@ class navcam:
             return
         roi_mask = None
         if DATASET == 'kite':
-            roi_mask = region_of_interest_mask(self.curr_img.shape, 
-                                        KITE_MASK_VERTICES[self.index], 
-                                        filler = 1)
-        
+            roi_mask = region_of_interest_mask(self.curr_img.shape, KITE_MASK_VERTICES[self.index])
+            # mask = np.zeros(self.curr_img.shape, dtype=np.uint8) 
+            # mask.fill(255)
+            # cv2.fillPoly(mask, KITE_MASK_VERTICES[self.index], 0)
+            # maskedImg = cv2.bitwise_and(self.curr_img, mask)
+
+            # plt.imshow(maskedImg)
+            # plt.show();
         self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, 
                                                     quality_level = SHI_TOMASI_QUALITY_LEVEL,
                                                     min_distance = SHI_TOMASI_MIN_DISTANCE, 
                                                     roi_mask = roi_mask, 
                                                     kpts_num = self.num_features)
-
     def front_end_sift_detection_matching(self):
         if self.curr_img is None:
             print('Warning: curr_img is None')
@@ -429,7 +432,7 @@ class navcam:
                 self.F = fundamental_matrix(rot, trans, K0, K1)
 
             ep_err = epi_constraint(self.flow_kpt0, self.flow_kpt3, self.F)
-            # import pdb ; pdb.set_trace()
+
             for ct, (err, pt1, pt3, pt4) in enumerate(zip(ep_err, self.flow_kpt0, self.flow_kpt3, self.flow_kpt4)):
                 x1, y1 = (pt1[0][0], pt1[0][1])
                 x3, y3 = (pt3[0][0], pt3[0][1])
@@ -631,6 +634,7 @@ class EgoMotion:
 
         if self.dataset.lower() == 'kitti':
             self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
+            # import pdb; pdb.set_trace()
             self.num_imgs  = len(self.camera_images[0])
             self.num_cams = len(self.camera_images)
         elif self.dataset.lower() == 'kite':
@@ -696,12 +700,14 @@ class EgoMotion:
 
         self.ego_R = cv2.Rodrigues(np.eye(3))[0]
         self.ego_t = np.zeros([3, 1])
-
-        body_to_world_trans, body_to_world_eular_xyz = self.syncer.get_initial_pose()
-        self.initial_origin = body_to_world_trans
-
-        self.pose_R = eulerAnglesToRotationMatrix(body_to_world_eular_xyz)
+        self.initial_origin = np.zeros((3, 1))
         self.pose_t = np.zeros((3, 1))
+        self.pose_R = np.eye(3)
+
+        if DATASET == 'kite':
+            body_to_world_trans, body_to_world_eular_xyz = self.syncer.get_initial_pose()
+            self.initial_origin = body_to_world_trans
+            self.pose_R = eulerAnglesToRotationMatrix(body_to_world_eular_xyz)
 
         # Compute the fundamental matrix
         for left in range(self.num_cams):
@@ -768,9 +774,10 @@ class EgoMotion:
         self.img_idx += 1
         for c in range(self.num_cams):        
             self.navcams[c].update_image(imgs_x4)        
-        if ts is not None:
+        if ts is not None and DATASET == 'kite':
             self.prev_acsmeta = self.curr_acsmeta
             self.curr_acsmeta = self.syncer.find_closest_acs_metadata(ts)
+            error = ts - self.curr_acsmeta[0]
 
     def compute_acsmeta_transformation_1_to_0(self):
         if self.curr_acsmeta is None or self.prev_acsmeta is None:
@@ -805,8 +812,13 @@ class EgoMotion:
             if img is None:
                 return None, ts
             if KITE_UNDISTORION_NEEDED:
+                img_bgr = []
                 for i in range(4):
                     img[i] = undistort_kite_image(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
+                    #tmp = cv2.cvtColor(img[i], cv2.COLOR_GRAY2BGR)
+                    #img_bgr.append(tmp)
+                #img_ = concat_images_list(img_bgr)
+                #cv2.imwrite('/tmp/' + str(img_idx) + '.jpg', img_)
             return img, ts
         else:
             raise ValueError('read_one_image failed: unsupported dataset')
@@ -843,26 +855,41 @@ class EgoMotion:
         y_offset = 0
         cost_err = None
         
+        rotation_list = []
+        translation_list = []
+
         rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6].reshape(3, 1)
 
         rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
                                                                                                   translation_camera0_frame, 
                                                                                                   self.navcams[0].calib_R, 
                                                                                                   self.navcams[0].calib_t)
+        rotation_list.append(rotation_camera0_frame)
+        translation_list.append(translation_camera0_frame)
 
-        rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
-                                                                                                  translation_camera0_frame, 
-                                                                                                  self.rotation_cam0_to_cam2, 
-                                                                                                  self.translation_cam0_to_cam2)
+        rotation_list.append(rotation_camera1_frame)
+        translation_list.append(translation_camera1_frame)
 
-        rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
-                                                                                                  translation_camera2_frame, 
-                                                                                                  self.navcams[2].calib_R, 
-                                                                                                  self.navcams[2].calib_t)
+        if DATASET == 'kite':
+            rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
+                                                                                                    translation_camera0_frame, 
+                                                                                                    self.rotation_cam0_to_cam2, 
+                                                                                                    self.translation_cam0_to_cam2)
+
+            rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
+                                                                                                    translation_camera2_frame, 
+                                                                                                    self.navcams[2].calib_R, 
+                                                                                                    self.navcams[2].calib_t)
+
+            rotation_list.append(rotation_camera2_frame)
+            translation_list.append(translation_camera2_frame)
+
+            rotation_list.append(rotation_camera3_frame)
+            translation_list.append(translation_camera3_frame)
 
         cv2.Rodrigues(rotation_camera1_frame)[0]
 
-        for c in cam_list:
+        for index, c in enumerate(cam_list):
             if c == 0:
                 egomotion_rotation = rotation_camera0_frame
                 egomotion_translation = translation_camera0_frame
@@ -879,7 +906,7 @@ class EgoMotion:
             rot_vecs = cv2.Rodrigues(egomotion_rotation)[0]
             trans_vecs = egomotion_translation
 
-            n_obj_013, n_obj_01 = cam_obs[c]
+            n_obj_013, n_obj_01 = cam_obs[index]
 
             cur_cam = self.navcams[c]
             camera_matrix = cur_cam.calib_K
@@ -965,7 +992,7 @@ class EgoMotion:
     def egomotion_solver(self, img_idx=None, ts = None, cam_list=[0, 1], est=None, debug_json_path=None):
         if img_idx is None or img_idx == 0:
             return None, None
-        
+
         num_cams = len(cam_list)
         cam_obs = np.zeros([num_cams, 2], dtype=np.int)
         y_meas = None
@@ -973,10 +1000,11 @@ class EgoMotion:
         time_diff_image = (ts - self.prev_ts) / 1e6
         time_diff = min(0.1, time_diff_image)
 
-        Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
-        Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+        if DATASET == 'kite':
+            Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
+            Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+            angular_vel0, linear_vel_ned0 = get_angular_linear_velocity_from_acsmeta(self.curr_acsmeta)
 
-        angular_vel0, linear_vel_ned0 = get_angular_linear_velocity_from_acsmeta(self.curr_acsmeta)
 
         if EGOMOTION_SEED_OPTION == 0:
             # Estimate each camera's local egomotion by 5 point algorithm   
@@ -992,14 +1020,16 @@ class EgoMotion:
             elif ts is not None and self.syncer is not None:
                 if angular_vel0 is not None and linear_vel_ned0 is not None:
 
+                    linear_vel0 = Rw0.T.dot(linear_vel_ned0)
+
                     body_rotation_estimation1, body_trans_estimation1, time_diff_pose = self.compute_acsmeta_transformation_1_to_0()
+
+                    print('time_diff_pose==============', time_diff_pose)
                     angular_vel1 = cv2.Rodrigues(body_rotation_estimation1)[0] / time_diff_pose
                     linear_vel1 = body_trans_estimation1 / time_diff_pose
 
-                    linear_vel0 = Rw0.T.dot(linear_vel_ned0)
-
-                    body_rotation_estimation0 = angular_velocity_to_rotation_matrix(angular_vel0, time_diff)
-                    body_trans_estimation0 = linear_velocity_to_translation(linear_vel0, time_diff)  
+                    body_rotation_estimation0 = angular_velocity_to_rotation_matrix(angular_vel1, time_diff)
+                    body_trans_estimation0 = linear_velocity_to_translation(linear_vel1, time_diff)  
                     # body_rotation_estimation0, body_trans_estimation0 = invert_RT(body_rotation_estimation0, body_trans_estimation0)
 
                     # body_rot_est_vel_aa = cv2.Rodrigues(body_rot_est_vel)[0]
@@ -1011,7 +1041,7 @@ class EgoMotion:
                         self.translation_body_to_cam0)
 
                     x0 = np.vstack([cv2.Rodrigues(rotation0)[0], translation0])
-
+ 
         self.prev_ts = ts
         json_data = {}
         json_data['egomotion'] = {}
@@ -1020,26 +1050,39 @@ class EgoMotion:
         rot0 = x0[0:3]
         trans0 = x0[3:6]
 
+        rotation_list = []
+        translation_list = []
+
         rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6].reshape(3, 1)
 
         rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
                                                                                                   translation_camera0_frame, 
                                                                                                   self.navcams[0].calib_R, 
                                                                                                   self.navcams[0].calib_t)
+        rotation_list.append(rotation_camera0_frame)
+        translation_list.append(translation_camera0_frame)
 
-        rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
-                                                                                                  translation_camera0_frame, 
-                                                                                                  self.rotation_cam0_to_cam2, 
-                                                                                                  self.translation_cam0_to_cam2)
+        rotation_list.append(rotation_camera1_frame)
+        translation_list.append(translation_camera1_frame)
 
-        rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
-                                                                                                  translation_camera2_frame, 
-                                                                                                  self.navcams[2].calib_R, 
-                                                                                                  self.navcams[2].calib_t)
+        if DATASET == 'kite':
+            rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
+                                                                                                    translation_camera0_frame, 
+                                                                                                    self.rotation_cam0_to_cam2, 
+                                                                                                    self.translation_cam0_to_cam2)
 
-        rotation_list = [rotation_camera0_frame, rotation_camera1_frame, rotation_camera2_frame, rotation_camera3_frame]
-        translation_list = [translation_camera0_frame, translation_camera1_frame, translation_camera2_frame, translation_camera3_frame]
-        for c  in cam_list:
+            rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
+                                                                                                    translation_camera2_frame, 
+                                                                                                    self.navcams[2].calib_R, 
+                                                                                                    self.navcams[2].calib_t)
+
+            rotation_list.append(rotation_camera2_frame)
+            translation_list.append(translation_camera2_frame)
+
+            rotation_list.append(rotation_camera3_frame)
+            translation_list.append(translation_camera3_frame)
+            
+        for index, c  in enumerate(cam_list):
             egomotion_rotation = rotation_list[c]
             egomotion_translation = translation_list[c]
 
@@ -1098,8 +1141,8 @@ class EgoMotion:
                 json_data['cam'+str(c)]['flow01'] = flow01_json.ravel().tolist()
                 json_data['cam'+str(c)]['flow01_init'] = points01.ravel().tolist()
 
-            cam_obs[c][0] = n_obs_i
-            cam_obs[c][1] = n_obs_j
+            cam_obs[index][0] = n_obs_i
+            cam_obs[index][1] = n_obs_j
 
         if y_meas is None or y_meas.shape[0] < 9:
             return self.pose_R, self.pose_t
@@ -1135,10 +1178,10 @@ class EgoMotion:
         json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
 
         # plt.plot(err0); plt.plot(err1); plt.show()
-        # import pdb; pdb.set_trace()
+  
         x_offset = 6
         for c in cam_list:
-            n_obj_013, n_obj_01 = cam_obs[c]
+            n_obj_013, n_obj_01 = cam_obs[index]
             if n_obj_013 > 0:      
                 points013 = res.x[x_offset: x_offset + 3 * n_obj_013].flatten()
                 json_data['cam'+str(c)]['flow013_opt'] = points013.tolist()
@@ -1156,6 +1199,7 @@ class EgoMotion:
             with open(outfile, 'w') as f:
                 json.dump(json_data, f, sort_keys=True, indent=4)
 
+
         t = t.reshape(3,1)
 
         acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rotation_cam0_to_body, self.translation_cam0_to_body)
@@ -1165,21 +1209,22 @@ class EgoMotion:
         # R, t = invert_RT(R, t)
         avg_reprojection_err = reprojection_err / float(np.sum(cam_obs))
 
-
-        angular_vel1 = acs_rot_aa  / time_diff
-        linear_vel_ned1 = Rw0.dot((acs_trans / time_diff).reshape(3,1))
-        
         print('img:' + str(self.navcams[0].img_idx), 
-              'rot0 [%.3f, %.3f, %.3f]' % (rot0[0], rot0[1], rot0[2]),  
-              'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
-              'rot1 [%.3f, %.3f, %.3f]' % (res.x[0], res.x[1], res.x[2]),  
-              'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
-              'proj_err [%.3f, %.3f]' % (reprojection_err, avg_reprojection_err))
+                'rot0 [%.3f, %.3f, %.3f]' % (rot0[0], rot0[1], rot0[2]),  
+                'rot1 [%.3f, %.3f, %.3f]' % (res.x[0], res.x[1], res.x[2]),  
+                'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
+                'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
+                'proj_err [%.3f, %.3f]' % (reprojection_err, avg_reprojection_err))
+                
+        if DATASET == 'kite':
+            angular_vel1 = acs_rot_aa  / time_diff
+            linear_vel_ned1 = Rw0.dot((acs_trans / time_diff).reshape(3,1))
+        
+            print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (angular_vel0[0], angular_vel0[1], angular_vel0[2], angular_vel1[0], angular_vel1[1], angular_vel1[2]),
+                  'linear_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (linear_vel_ned0[0], linear_vel_ned0[1], linear_vel_ned0[2], linear_vel_ned1[0], linear_vel_ned1[1], linear_vel_ned1[2]))
 
 
-        print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (angular_vel0[0], angular_vel0[1], angular_vel0[2], angular_vel1[0], angular_vel1[1], angular_vel1[2]),
-              'linear_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (linear_vel_ned0[0], linear_vel_ned0[1], linear_vel_ned0[2], linear_vel_ned1[0], linear_vel_ned1[1], linear_vel_ned1[2]))
-
+        # import pdb; pdb.set_trace()
 
         if avg_reprojection_err > AVG_REPROJECTION_ERROR:
             self.prev_invalid = True
@@ -1189,11 +1234,12 @@ class EgoMotion:
         self.prev_egomotion = res.x[0:6]
         self.prev_invalid = False
 
-        self.fc_angular_velocity = angular_vel0
-        self.fc_linear_velocity = linear_vel_ned0
+        if DATASET == 'kite':
+            self.fc_angular_velocity = angular_vel0
+            self.fc_linear_velocity = linear_vel_ned0
 
-        self.est_angular_velocity = angular_vel1
-        self.est_linear_velocity = linear_vel_ned1
+            self.est_angular_velocity = angular_vel1
+            self.est_linear_velocity = linear_vel_ned1
 
         pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
         return pose_R, pose_t 
@@ -1212,7 +1258,7 @@ def _main(args):
     use_kite_kpts = args.use_kite_kpts
 
     if not os.path.exists(calib_file):
-        raise Exception('Kite data but no valid calib fie')
+        raise Exception('no valid calib fie')
 
     if not os.path.exists(output_path):
         os.mkdir(output_path)
@@ -1257,7 +1303,7 @@ def _main(args):
         if camera_images == None:
             continue
         kv.upload_images_acsmeta(camera_images, ts)
-        
+
         if external_json_pose:
             if img_id < 1:
                 global_tr = [0, 0, 0]
@@ -1323,7 +1369,7 @@ def _main(args):
         cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
         img_bgr = []
-        for i in range(len(CAMERA_LIST)):
+        for i in CAMERA_LIST:
             img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (320, 240))
             img_bgr.append(img)
         img_ = concat_images_list(img_bgr)

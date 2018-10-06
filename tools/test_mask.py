@@ -53,10 +53,10 @@ def generateImageMask(vertices, image_shape = (640, 480)):
     return roi_mask
     
 
-img = '/home/jzhang/vo_data/SN51/video/20180913F05_SR80_000010051_NAV_0001/272.jpg'
+img = '/tmp/0.jpg'
 imgs_x4 = pil_split_rotate_kite_record_image(img)
 for i in range(len(imgs_x4)):
-    cv2.imwrite('/tmp/' + str(i) + '.jpg', imgs_x4[i])
+    cv2.imwrite('/tmp/split' + str(i) + '.jpg', imgs_x4[i])
 
 rois = []
 for i in range(0, 4):

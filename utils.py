@@ -109,9 +109,6 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
 
     f = balance * fmin + (1.0 - balance) * fmax
 
-
-    # import pdb; pdb.set_trace()
-
     new_f = [f, f / aspect_ratio]
     new_c = -cn * f + np.array([w, h * aspect_ratio]) * 0.5
     # restore aspect ratio
@@ -126,12 +123,17 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
 def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
     # K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
+    # import pdb; pdb.set_trace()
     return K0
 
 def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
     map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_org, D, np.eye(3), K_new, dim, cv2.CV_16SC2)
     undistorted_img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
     return undistorted_img
+
+
+def kite_stereo_rectify(K1, D1, K2, D2, R, t, dim = (640, 480)):
+    return cv.fisheye.stereoRectif(K1, D1, K2, D2, dim, R, t)
 
 
 def gaussian_blur(img, kernel=(5,5)):
@@ -149,7 +151,7 @@ def region_of_interest_mask(image_shape, vertices, filler = None):
     if not filler:  
         mask.fill(255)
     else:
-        mask.fill(1)
+        mask.fill(filler)
 
     #defining a 3 channel or 1 channel color to fill the mask with depending on the input image
     if len(image_shape) > 2:
@@ -336,7 +338,6 @@ def get_kitti_calib_path(kitti_base=None, data_seq='01'):
     return os.path.join(seq_path, 'calib.txt')
 
 def get_kitti_ground_truth(kitti_base=None, data_seq=None):
-    assert(data_seq is not None)
     pose_path = os.path.join(kitti_base, 'poses')
     pose_path = os.path.join(pose_path, data_seq + '.txt')
     if not os.path.exists(pose_path):
@@ -952,6 +953,7 @@ def compute_body_to_camera0_transformation(imu_to_body_rotation=np.eye(3), rotat
     '''
     rotation_body_to_cam0 = np.dot(rotation_imu_to_cam0,  imu_to_body_rotation.T)
     translation_body_to_cam0 = translation_imu_to_camera0
+    # import pdb; pdb.set_trace()
     return rotation_body_to_cam0, translation_body_to_cam0
 
 def transform_egomotion_from_frame_a_to_b(egomotion_rotation_a, egomotion_translation_a, rotation_a_to_b, translation_a_to_b):
@@ -975,7 +977,11 @@ def angular_velocity_to_rotation_matrix(w = [0.0, 0.0, 0.0], dt = 0.0):
     n1 = n1 + dt*((wx*n0)/2 - (wy*n3)/2 + (wz*n2)/2)
     n2 = n2 + dt*((wx*n3)/2 + (wy*n0)/2 - (wz*n1)/2)
     n3 = n3 + dt*((wy*n1)/2 - (wx*n2)/2 + (wz*n0)/2)
+
+    scale = 1.0 / math.sqrt(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3 )
+
     q0 = Quaternion(array=np.array([n0, n1, n2, n3]))
+
     return q0.rotation_matrix
 
 
