@@ -1,15 +1,19 @@
 import numpy as np
 
-CAMERA_LIST = [0]
 
 # configs for KITTI dataset
-DATASET = 'kitti' 
-# DATASET = 'kite'
+# DATASET = 'kitti' 
+DATASET = 'kite'
+
+
+CAMERA_LIST = [0, 1, 2, 3]
+NUM_FRAMES  = 1500
 
 if DATASET == 'kitti':
     INPUT_IMAGE_PATH='/home/jzhang/vo_data/dataset'
     INPUT_CALIB_PATH='/home/jzhang/Downloads/dataset/sequences/02/calib.txt'
     EGOMOTION_SEED_OPTION = 0 # 0: 5 point algorithem
+    CAMERA_LIST = [0, 1]
 else:
     # configs for KITI dataset
     KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
@@ -21,9 +25,10 @@ else:
     KITE_SKIP_IMAGE_FACTOR = 0
     # KITE_OUTPUT_POSE_PATH = '/tmp/kite/kv_egomotion.json'
 
-KITE_OUTPUT_POSE_PATH = '/tmp/avl.json'
+KITE_OUTPUT_POSE_PATH = '/tmp/kite/avl.json'
+# KITE_OUTPUT_POSE_PATH = '/home/jzhang/kite.pyflow/avl.json'
 
-# KITE_OUTPUT_POSE_PATH = None
+KITE_OUTPUT_POSE_PATH = None
 PYEGO_DEBUG_OUTPUT = '/tmp/pyego'
 EGOMOTION_TRAJ_COLOR = (0, 255, 0)
 GT_TRAJ_COLOR = (255, 255, 255)
@@ -34,14 +39,16 @@ IMU_TO_BODY_ROT = np.array([0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0, 1]).res
 # Features for egomotion
 AVG_REPROJECTION_ERROR = 2.5
 USE_01_FEATURE = True
-DEBUG_KEYPOINTS = False
+TWO_VIEW_FEATURE_WEIGHT = 0.5 
+
+DEBUG_KEYPOINTS = True
 
 KITE_KPTS_PATH = '/tmp/kite/'
 
 SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
-MAX_NUM_KEYPOINTS = 96 
-SCIPY_LS_VERBOSE_LEVEL = 1
+MAX_NUM_KEYPOINTS        = 64 
+SCIPY_LS_VERBOSE_LEVEL   = 0
 
 FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
 FIVE_POINTS_ALGO_EPI_THRESHOLD = 1e-2
@@ -60,7 +67,7 @@ INTER_OPT_FLOW_EPILINE_ERROR_THRESHOLD = 5e-4
 
 
 # Constants to control the egomotion LS 
-LS_PARMS = dict(max_nfev=20, 
+LS_PARMS = dict(max_nfev=10, 
                 verbose=SCIPY_LS_VERBOSE_LEVEL,
                 x_scale='jac',
                 jac='3-point',

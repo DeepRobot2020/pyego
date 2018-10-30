@@ -10,6 +10,8 @@ from pyquaternion import Quaternion
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.pyplot import figure, show
+
 
 from cfg import *
 
@@ -80,11 +82,12 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
     corners.append(np.array([w,  h / 2.0]))
     corners.append(np.array([w / 2.0,  h]))
     corners.append(np.array([0,  h / 2.0]))
+    
     corners = np.array(corners, dtype=np.float32)
     corners = corners.reshape(len(corners), 1, 2)
 
-    # corners = cv2.fisheye.undistortPoints(corners, K, D, np.eye(3))
-    corners = kiteFishEyeUndistortPoints(corners, K, D, np.eye(3)) 
+    corners = cv2.fisheye.undistortPoints(corners, K, D, np.eye(3))
+    # corners = kiteFishEyeUndistortPoints(corners, K, D, np.eye(3)) 
 
     center_mass = np.mean(corners)
     cn = np.array([center_mass, center_mass])
@@ -122,8 +125,8 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
 
 def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
-    # K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
-    # import pdb; pdb.set_trace()
+    K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
+    import pdb; pdb.set_trace()
     return K0
 
 def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
@@ -739,8 +742,8 @@ def global_bundle_adjustment_sparsity(cam_obs, n_cams=4, n_poses=1):
 
     n_obs = n_obs_013_sum + n_obs_01_sum
 
-    m = (n_obs_013_sum * 3 + n_obs_01_sum * 2) * 2
-    n = n_poses * 6 + n_obs * 3
+    m = (n_obs_013_sum * 3 + n_obs_01_sum * 2) * 2 # rows
+    n = n_poses * 6 + n_obs * 3 # cols
     A = lil_matrix((m, n), dtype=int)
     # fill in the sparse struct of A
     m_offset_i = 0
@@ -788,83 +791,6 @@ def global_bundle_adjustment_sparsity(cam_obs, n_cams=4, n_poses=1):
         m_offset_i += (3*n_obs_i + 2 * n_obs_j) * 2
         n_offset_i += (n_obs_i + n_obs_j) * 3
 
-    return A
-
-
-def global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=4, n_poses=1):
-    n_obs_013 = cam_obs[:,0]
-    n_obs_01  = cam_obs[:,1]
-
-    n_obs_013_sum = np.sum(n_obs_013)
-    n_obs_01_sum = np.sum(n_obs_01)
-
-    n_obs = n_obs_013_sum + n_obs_01_sum
-
-    m = (n_obs_013_sum * 3 + n_obs_01_sum * 2) * 2
-    n = n_poses * 6 + n_obs * 3
-    A = lil_matrix((m, n), dtype=int)
-    # fill in the sparse struct of A
-    m_offset_i = 0
-    n_offset_i = 0
-
-    m_offset = 0
-    n_offset_j = 0
-    for c in range(n_cams):
-        n_obs_i = n_obs_013[c]
-        n_obs_j = n_obs_01[c]
-
-        i = np.arange(n_obs_i)
-        j = np.arange(n_obs_j)
-        
-        # m_offset = m_offset + 6*n_obs_i 
-        # n_offset_j = n_offset_i + 3*n_obs_i
-
-        # fill the flow013_1 entries
-        # fill the entries for egomotion
-        for k in range(6):
-            A[m_offset + 2 * i,     k] = 1
-            A[m_offset + 2 * i + 1, k] = 1
-        # fill the entries for flow013_1
-        for k in range(3):
-            A[m_offset + 2 * i,     n_offset_i + n_poses * 6 + i * 3 + k] = 1
-            A[m_offset + 2 * i + 1, n_offset_i + n_poses * 6 + i * 3 + k] = 1
-            
-        m_offset += n_obs_i * 2
-        n_offset_j += n_obs_i * 3
-        
-        # fill the flow01_1 entries
-        if n_obs_j > 0:
-            # fill the entries for egomotion
-            for k in range(6):
-                A[m_offset + 2 * i,     k] = 1
-                A[m_offset + 2 * i + 1, k] = 1
-
-            for k in range(3):
-                A[m_offset + 2 * j,     n_offset_j + n_poses * 6 + j * 3 + k] = 1
-                A[m_offset + 2 * j + 1, n_offset_j + n_poses * 6 + j * 3 + k] = 1
-
-        m_offset += n_obs_j * 2
-
-        # fill the flow013_flow0 entries
-        for k in range(3):
-            A[m_offset + 2 * i,     n_offset_i + n_poses * 6 + i * 3 + k] = 1
-            A[m_offset + 2 * i + 1, n_offset_i + n_poses * 6 + i * 3 + k] = 1
-
-        m_offset += n_obs_i * 2
-        # fill the flow013_flow3 entries
-        for k in range(3):
-            A[m_offset + 2 * i,     n_offset_i + n_poses * 6 + i * 3 + k] = 1
-            A[m_offset + 2 * i + 1, n_offset_i + n_poses * 6 + i * 3 + k] = 1
-        
-        m_offset += n_obs_i * 2
-        # fill the flow01_flow0 entries
-        if n_obs_j > 0:
-            for k in range(3):
-                A[m_offset + 2 * j,     n_offset_j + n_poses * 6 + j * 3 + k] = 1
-                A[m_offset + 2 * j + 1, n_offset_j + n_poses * 6 + j * 3 + k] = 1
-
-        m_offset += n_obs_j * 2
-        n_offset_i = (n_obs_i + n_obs_j) * 3
     return A
 
 
@@ -1052,4 +978,42 @@ def get_angular_linear_velocity_from_acsmeta(msg):
     v = np.array([msg[ACS_POSITION_X_DOT], msg[ACS_POSITION_Y_DOT], msg[ACS_POSITION_Z_DOT]], dtype=np.float32).reshape(3,1)
     return [w, v]
     
+# Taken from python curve fit covariance estimation code
+def covarinace_svd(jac):
+    _, s, VT = np.linalg.svd(jac, full_matrices=False)
+    threshold = np.finfo(float).eps * max(res.jac.shape) * s[0]
+    s = s[s > threshold]
+    VT = VT[:s.size]
+    pcov = np.dot(VT.T / s**2, VT)
+
+def covariance_mvg_A6_4(jac): 
+    # Estimate the covariance of the motion paramters by MVG Algorithm A6.4.
+    hessian = jac.T.dot(jac)
+    # with shape (6 + num_points * 3) x (6 + num_points)
+    U = hessian[0:6,0:6] # Top left U block 6x6 
+    W = hessian[0:6,6:]  # Top right W block 6 x (num_points * 3)
+    V = hessian[6:,6:]   # Bottom right block diagonal matrix (num_points * 3) x (num_points * 3)
+    # Compute the 6x6 S matrix
+    # S = U - sum_i(W_i * Vi ^ -1 * W_i')
+    n_points = (hessian.shape[0] - 6) / 3
+
+    sum_i = np.zeros_like(U)
+    for i in range(n_points):
+        W_i = W[:,i * 3 : (i + 1) * 3]
+        V_i = V[i * 3 : i * 3 + 3,i * 3 : i * 3 + 3]
+        V_i_inv = np.linalg.inv(V_i)
+        sum_i += (W_i.dot(V_i_inv)).dot(W_i.T)
+    S = U - sum_i
+    S_inv = np.linalg.inv(S)
+    return S_inv
+
+def visualize_sparsity_jacobian(jac):
+    fig = figure()
+    ax1 = fig.add_subplot(211)
+    ax2 = fig.add_subplot(212)
+    ax1.set_title("Jacobian 4 Camera 1 pose")
+    ax2.set_title("J' * J 4 Camera 1 pose")
+    ax1.spy(jac, markersize=5)
+    ax2.spy(jac.T.dot(jac), markersize=5)
+    show()
 

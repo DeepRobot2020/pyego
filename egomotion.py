@@ -18,7 +18,7 @@ from ImageImuSyncer import ImageImuSyncer
 
 from utils import *
 from cfg import *
-
+from matplotlib.pyplot import figure, show
 
 parser = argparse.ArgumentParser(
     description='Compute camera relative pose on input stereo or quad images')
@@ -76,25 +76,17 @@ parser.add_argument(
     default=2)
 
 parser.add_argument(
-    '-ransac',
-    '--enable_ransac',
-    type=bool,
-    help='Enable Ransac for Egomotion estimation',
-    default=False)
-
-
-parser.add_argument(
     '-json_pose',
     '--external_json_pose',
     help='Debug a extimated pose',
     default=KITE_OUTPUT_POSE_PATH)
 
 parser.add_argument(
-    '-use_kite_kpts',
-    '--use_kite_kpts',
-    help='use keypoints from kite',
-    type=bool,
-    default=False)
+    '-json_feature_path',
+    '--json_feature_path',
+    help='use image features from json files',
+    type=str,
+    default=None)
 
 class KTPinholeCamera:
     def __init__(self, width, height, fx, fy, cx, cy, k1=0.0, k2=0.0, p1=0.0, p2=0.0, k3=0.0):
@@ -166,7 +158,7 @@ class navcam:
         self.F = None 
     
         self.proj_mtx = None
-        
+
 
     def mono_vo(self, abs_scale = 1.0):
         if self.img_idx is None or self.img_idx == 0:
@@ -430,9 +422,8 @@ class navcam:
                 rot = self.calib_R
                 trans = self.calib_t
                 self.F = fundamental_matrix(rot, trans, K0, K1)
-
             ep_err = epi_constraint(self.flow_kpt0, self.flow_kpt3, self.F)
-
+            # import pdb; pdb.set_trace()
             for ct, (err, pt1, pt3, pt4) in enumerate(zip(ep_err, self.flow_kpt0, self.flow_kpt3, self.flow_kpt4)):
                 x1, y1 = (pt1[0][0], pt1[0][1])
                 x3, y3 = (pt3[0][0], pt3[0][1])
@@ -631,6 +622,8 @@ class EgoMotion:
         self.prev_ts = 0
         self.prev_acsmeta = None
         self.curr_acsmeta = None
+        self.ned_vel_err = np.zeros([3,1])
+        self.vel_covar = np.zeros([6,1])
 
         if self.dataset.lower() == 'kitti':
             self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
@@ -729,46 +722,48 @@ class EgoMotion:
         self.trueX, self.trueY, self.trueZ = x, y, z
         return np.sqrt((x - x_prev)*(x - x_prev) + (y - y_prev)*(y - y_prev) + (z - z_prev)*(z - z_prev))
        
-    def update_keypoints(self, img_id, use_kite_kpts):
-        frame_file_name = 'kvrawframe' + str(img_id) + '.json'
-        json_file = os.path.join(KITE_KPTS_PATH, frame_file_name)
-        load_kite_kpts_good = False
-
-        if use_kite_kpts:
-            if not os.path.exists(json_file):
-                print(json_file, 'does not exist, using shi tomasi')
-            else:
-                print('loading...' + json_file)
-                load_kite_kpts_good = True
-                with open(json_file, 'r') as f:
-                    data = json.load(f)
-                    for i in range(self.num_cams):
-                        flow_kpts = np.array(data['cam'+str(i)]['flow_kpts'], dtype=np.float32)
-                        flow_kpts = flow_kpts.reshape(-1, 10)
-                        # load the original keypoints
-                        flow_kpt0 = flow_kpts[:, 0:2]
-                        flow_kpt0 = flow_kpt0.reshape(-1, 1, 2).astype(np.float32)
-                        # load the forward intra matching 
-                        flow_kpt1 = flow_kpts[:, 2:4]
-                        flow_kpt1 = flow_kpt1.reshape(-1, 1, 2).astype(np.float32)
-                        self.navcams[i].flow_kpt0 = flow_kpt0   
-                        self.navcams[i].flow_kpt1 = flow_kpt1  
-        if not load_kite_kpts_good:
-            for i in range(self.num_cams):
+    def update_keypoints(self, img_id):
+        for i in range(self.num_cams):
+            if i in CAMERA_LIST:
                 self.navcams[i].keypoint_detection()
 
     def update_inter_optflow(self):
         for i in range(self.num_cams):
-            self.navcams[i].inter_sparse_optflow()
+            if i in CAMERA_LIST:
+                self.navcams[i].inter_sparse_optflow()
 
     def update_intra_optflow(self):
         if self.img_idx > 0:
             for i in range(self.num_cams):
-                self.navcams[i].intra_sparse_optflow()
+                if i in CAMERA_LIST:
+                    self.navcams[i].intra_sparse_optflow()
               
     def filter_keypoints_outliers(self, debug=False):
         for c in range(self.num_cams):
-            self.navcams[c].filter_keypoints(debug=debug)
+            if c in CAMERA_LIST:
+                self.navcams[c].filter_keypoints(debug=debug)
+
+    def load_features_from_json(self, json_feature_path, NUM_CAMS=4, PREFIX='frame'):
+        json_name = PREFIX + str(self.img_idx) + '.json'
+        json_file = os.path.join(json_feature_path, json_name)
+        if not os.path.exists(json_file):
+            print(json_file + ' not exist')
+            return 
+        print('loading', json_file)
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+            for i in range(NUM_CAMS):
+                try:
+                    flow01 = np.array(data['cam'+str(i)]['flow01'], dtype=np.float32).reshape(-1, 4)
+                    flow013 = np.array(data['cam'+str(i)]['flow013'], dtype=np.float32).reshape(-1, 6)
+                    self.navcams[i].flow_intra0 = np.array(flow01[:, 0:2], dtype=np.float64)
+                    self.navcams[i].flow_intra1 = np.array(flow01[:, 2:4], dtype=np.float64)
+
+                    self.navcams[i].flow_intra_inter0 = np.array(flow013[:, 0:2], dtype=np.float64)
+                    self.navcams[i].flow_intra_inter1 = np.array(flow013[:, 2:4], dtype=np.float64)
+                    self.navcams[i].flow_intra_inter3 = np.array(flow013[:, 4:6], dtype=np.float64)
+                except:
+                    print(json_file, 'error for loading feature for cam ', i)
 
     def upload_images_acsmeta(self, imgs_x4, ts):
         self.img_idx += 1
@@ -938,8 +933,6 @@ class EgoMotion:
                     cost_err = flow013_errs
                 else:
                     cost_err = np.vstack([cost_err, flow013_errs])
-                # plt.plot(flow013_errs.ravel()); plt.show()
-                # import pdb ; pdb.set_trace()
 
             if n_obj_01 > 0:
                 points_01  = x0[x0_offset: x0_offset+3*n_obj_01].reshape(-1, 3)
@@ -949,7 +942,7 @@ class EgoMotion:
                 flow0_err = reprojection_error(points_01, flow01_0, camera_matrix)
                 flow1_err = reprojection_error(points_01, flow01_1, camera_matrix, rot_vecs, trans_vecs)
 
-                flow01_errs = np.vstack((flow0_err, flow1_err))
+                flow01_errs = TWO_VIEW_FEATURE_WEIGHT * np.vstack((flow0_err, flow1_err)) * 1.0
         
                 x0_offset += 3 * n_obj_01
                 y_offset += 2 * n_obj_01
@@ -1019,26 +1012,33 @@ class EgoMotion:
                 x0 = self.prev_egomotion.reshape(6,1)
             elif ts is not None and self.syncer is not None:
                 if angular_vel0 is not None and linear_vel_ned0 is not None:
-
                     linear_vel0 = Rw0.T.dot(linear_vel_ned0)
 
-                    body_rotation_estimation1, body_trans_estimation1, time_diff_pose = self.compute_acsmeta_transformation_1_to_0()
+                    imu_rot_est = angular_velocity_to_rotation_matrix(angular_vel0, time_diff)
+                    imu_trans_est = linear_velocity_to_translation(linear_vel0, time_diff)  
 
-                    print('time_diff_pose==============', time_diff_pose)
-                    angular_vel1 = cv2.Rodrigues(body_rotation_estimation1)[0] / time_diff_pose
-                    linear_vel1 = body_trans_estimation1 / time_diff_pose
+                    pose_rot, pose_trans_bd, time_diff_pose = self.compute_acsmeta_transformation_1_to_0()
+                    pose_ang_vel = cv2.Rodrigues(pose_rot)[0] / time_diff_pose
 
-                    body_rotation_estimation0 = angular_velocity_to_rotation_matrix(angular_vel1, time_diff)
-                    body_trans_estimation0 = linear_velocity_to_translation(linear_vel1, time_diff)  
-                    # body_rotation_estimation0, body_trans_estimation0 = invert_RT(body_rotation_estimation0, body_trans_estimation0)
+                    pose_lin_vel = pose_trans_bd / time_diff_pose
+                    pose_lin_vel_ned = Rw0.dot(pose_lin_vel)
 
-                    # body_rot_est_vel_aa = cv2.Rodrigues(body_rot_est_vel)[0]
-                    # import pdb; pdb.set_trace()
-                    # Conver body transformation from 1 to 0 to camera0
-                    rotation0, translation0 = transform_egomotion_from_frame_a_to_b(body_rotation_estimation0, 
-                        body_trans_estimation0, 
-                        self.rotation_body_to_cam0, 
-                        self.translation_body_to_cam0)
+                    pose_rot_est = angular_velocity_to_rotation_matrix(pose_ang_vel, time_diff)
+                    pose_trans_est = linear_velocity_to_translation(pose_lin_vel, time_diff)  
+
+                    # Conver body transformation from body to camera0
+                    if EGOMOTION_SEED_OPTION == 1:
+                        rotation0, translation0 = transform_egomotion_from_frame_a_to_b(
+                                imu_rot_est, 
+                                imu_trans_est, 
+                                self.rotation_body_to_cam0, 
+                                self.translation_body_to_cam0)
+                    else:
+                        rotation0, translation0 = transform_egomotion_from_frame_a_to_b(
+                            pose_rot_est, 
+                            pose_trans_est, 
+                            self.rotation_body_to_cam0, 
+                            self.translation_body_to_cam0)
 
                     x0 = np.vstack([cv2.Rodrigues(rotation0)[0], translation0])
  
@@ -1095,6 +1095,7 @@ class EgoMotion:
             n_obs_i = cur_cam.flow_intra_inter0.shape[0]
             n_obs_j = cur_cam.flow_intra0.shape[0]
 
+            # import pdb; pdb.set_trace()
             if not USE_01_FEATURE:
                 n_obs_j = 0
 
@@ -1149,7 +1150,7 @@ class EgoMotion:
 
         x0 = x0.flatten()
 
-        sparse_A = global_bundle_adjustment_sparsity_opt(cam_obs, n_cams=num_cams) 
+        sparse_A = global_bundle_adjustment_sparsity(cam_obs, n_cams=num_cams) 
 
         t0 = datetime.now()
         res = None
@@ -1166,6 +1167,12 @@ class EgoMotion:
         if res is None:
             return self.pose_R, self.pose_t
 
+
+        jac = res.jac.toarray()
+        # Compute covariance
+        self.vel_covar = covariance_mvg_A6_4(jac)
+        # json_data['egomotion']['covariance'] = covar.diagonal.ravel().tolist()
+
         t1 = datetime.now()
         ego_elapsed = t1 - t0
 
@@ -1176,9 +1183,7 @@ class EgoMotion:
         t = res.x[3:6]       
 
         json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
-
-        # plt.plot(err0); plt.plot(err1); plt.show()
-  
+ 
         x_offset = 6
         for c in cam_list:
             n_obj_013, n_obj_01 = cam_obs[index]
@@ -1195,7 +1200,7 @@ class EgoMotion:
                 # import pdb ; pdb.set_trace()
 
         if os.path.exists(debug_json_path):
-            outfile = os.path.join(debug_json_path, 'pyframe'+str(img_idx)+'.json')
+            outfile = os.path.join(debug_json_path, 'frame'+str(img_idx)+'.json')
             with open(outfile, 'w') as f:
                 json.dump(json_data, f, sort_keys=True, indent=4)
 
@@ -1215,14 +1220,32 @@ class EgoMotion:
                 'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
                 'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
                 'proj_err [%.3f, %.3f]' % (reprojection_err, avg_reprojection_err))
-                
+        
         if DATASET == 'kite':
             angular_vel1 = acs_rot_aa  / time_diff
             linear_vel_ned1 = Rw0.dot((acs_trans / time_diff).reshape(3,1))
         
-            print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (angular_vel0[0], angular_vel0[1], angular_vel0[2], angular_vel1[0], angular_vel1[1], angular_vel1[2]),
-                  'linear_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (linear_vel_ned0[0], linear_vel_ned0[1], linear_vel_ned0[2], linear_vel_ned1[0], linear_vel_ned1[1], linear_vel_ned1[2]))
 
+            for i in range(3):
+                err = abs(abs(linear_vel_ned1[i]) - abs(pose_lin_vel_ned[i])) / abs(pose_lin_vel_ned[i])
+                self.ned_vel_err[i] = err * 100
+
+            for i in range(3):
+                err = abs(abs(linear_vel_ned1[i]) - abs(pose_lin_vel_ned[i])) / abs(pose_lin_vel_ned[i])
+                self.ned_vel_err[i] = err * 100
+
+            print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (
+                pose_ang_vel[0], 
+                pose_ang_vel[1], 
+                pose_ang_vel[2], 
+                angular_vel1[0], 
+                angular_vel1[1], 
+                angular_vel1[2]))
+
+            print('linear_vel_err [%.2f%%, %.2f%%, %.2f%%]' % (
+                self.ned_vel_err[0], 
+                self.ned_vel_err[1], 
+                self.ned_vel_err[2]))
 
         # import pdb; pdb.set_trace()
 
@@ -1250,12 +1273,11 @@ def _main(args):
     calib_file = os.path.expanduser(args.calib_path)
     json_enabled = args.enable_json
     num_features = args.num_features
-    ransac_enabled = args.enable_ransac
     num_cam = args.num_cameras
     dataset = args.dataset_type.lower()
     seq = ("%02d" % (args.seq_num))  if (dataset == 'kitti') else str(args.seq_num)
     external_json_pose = args.external_json_pose
-    use_kite_kpts = args.use_kite_kpts
+    json_feature_path = args.json_feature_path
 
     if not os.path.exists(calib_file):
         raise Exception('no valid calib fie')
@@ -1268,20 +1290,22 @@ def _main(args):
                    calib_file=calib_file, 
                    num_features=num_features, 
                    dataset=dataset, 
-                   ransac=ransac_enabled, 
                    json_output=json_enabled)
 
     kv = EgoMotion(**em_pars)
 
     traj = np.zeros((960, 1280, 3), dtype=np.uint8)
 
-    text = "FC Estimated Position (ACS_METADATA)"
-    cv2.line(traj,(800, 78),(850, 78),(255,255,255),2)
-    cv2.putText(traj, text, (875, 85), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+    text = "Aircraft Moving E/W"
+    cv2.putText(traj, text, (700, 58), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+    
+    text = "N/E Traj by Fight Control"
+    cv2.line(traj,(700, 78),(750, 78),(255,255,255),2)
+    cv2.putText(traj, text, (775, 85), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
-    text = "4x Navgatiom Cameas Seed By FC"
-    cv2.line(traj,(800, 98),(850, 98),EGOMOTION_TRAJ_COLOR,2)
-    cv2.putText(traj, text, (875, 105), cv2.FONT_HERSHEY_PLAIN, 1, EGOMOTION_TRAJ_COLOR, 1, 8)
+    text = "N/E Traj by Vision with One IMU Sample Every Frame"
+    cv2.line(traj,(700, 98),(750, 98),EGOMOTION_TRAJ_COLOR,2)
+    cv2.putText(traj, text, (775, 105), cv2.FONT_HERSHEY_PLAIN, 1, EGOMOTION_TRAJ_COLOR, 1, 8)
 
     traj_index = 0
     json_pose = None
@@ -1296,14 +1320,16 @@ def _main(args):
     global_tr = [0, 0, 0]
 
     for img_id in range(kv.num_imgs):
+        if img_id > NUM_FRAMES:
+            break
         if dataset == 'kitti':
             kv.load_kitti_gt(img_id)
 
         camera_images, ts = kv.read_one_image(img_id)
+        # import pdb; pdb.set_trace()
         if camera_images == None:
             continue
         kv.upload_images_acsmeta(camera_images, ts)
-
         if external_json_pose:
             if img_id < 1:
                 global_tr = [0, 0, 0]
@@ -1311,14 +1337,15 @@ def _main(args):
             
             if img_id >= n_json_pose:
                 break
-            frame_name = 'pyframe' + str(img_id)
+            frame_name = 'frame' + str(img_id)
             try:
                 estimated_rt = json_pose[frame_name]['optimized']
                 R = np.array([estimated_rt[0:3]])
                 R = cv2.Rodrigues(R)[0]
                 t = np.array([estimated_rt[3:]]).reshape(3,1)
                 # import pdb; pdb.set_trace()
-                acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, kv.rotation_cam0_to_body, kv.translation_cam0_to_body)
+                acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(
+                        R, t, kv.rotation_cam0_to_body, kv.translation_cam0_to_body)
 
                 print(frame_name, img_id, estimated_rt)
                 _, global_tr = kv.update_global_camera_pose_egomotion(acs_rot, acs_trans.reshape(3,1))
@@ -1326,11 +1353,14 @@ def _main(args):
                 print('warning, no ' + frame_name + ' estimation from json')
                 global_tr = kv.pose_t
         else:
-            kv.update_keypoints(img_id, use_kite_kpts)
-            kv.update_inter_optflow()
-            kv.update_intra_optflow()
-            kv.filter_keypoints_outliers(debug=DEBUG_KEYPOINTS)
-     
+            if json_feature_path is None:
+                kv.update_keypoints(img_id)
+                kv.update_inter_optflow()
+                kv.update_intra_optflow()
+                kv.filter_keypoints_outliers(debug=DEBUG_KEYPOINTS)
+            else:
+                kv.load_features_from_json(json_feature_path)
+
             global_rot, global_tr = kv.egomotion_solver(img_id, ts,
                                                         cam_list=CAMERA_LIST, 
                                                         debug_json_path=PYEGO_DEBUG_OUTPUT)
@@ -1364,9 +1394,29 @@ def _main(args):
         cv2.circle(traj, (draw_x0, draw_y0), 1, EGOMOTION_TRAJ_COLOR, 1)
         cv2.circle(traj, (true_x,true_y), 1, GT_TRAJ_COLOR, 2)
 
-        cv2.rectangle(traj, (780, 0), (1280, 50), (0,0,0), -1)
-        text = "Image:%2d, NED: x=%.2fm y=%.2fm z=%.2fm"%(img_id, x, y, z)
-        cv2.putText(traj, text, (800,40), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+
+
+        cv2.rectangle(traj, (700, 120), (1280, 200), (0,0,0), -1)
+
+        if dataset == 'kitti':
+            text = "Image: %d: X= %.2fm Y= %.2fm Z= %.2fm"%(img_id, x, y, z)
+            cv2.putText(traj, text, (700,140), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+        else:
+            text = "Img: %d N: %.2fm E: %.2fm D: %.2fm"%(img_id, x, y, z)
+
+            text1 = "Trajectory Err:      [N: %8.1f%%, E: %8.1f%%, D: %8.1f%%]"%( 
+                100 * abs(abs(kv.trueX) - abs(x)) / abs(x),
+                100 * abs(abs(kv.trueY) - abs(y)) / abs(y),
+                100 * abs(abs(kv.trueZ) - abs(z)) / abs(z))
+
+            text2 = "Linear Velocity Err: [N: %8.1f%%, E: % 8.1f%%, D: % 8.1f%%]"%(
+                kv.ned_vel_err[0], 
+                kv.ned_vel_err[1], 
+                kv.ned_vel_err[2])
+
+            cv2.putText(traj, text, (700,140), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1, 8)
+            cv2.putText(traj, text1, (700,160), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1, 8)
+            cv2.putText(traj, text2, (700,180), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1, 8)
 
         img_bgr = []
         for i in CAMERA_LIST:
