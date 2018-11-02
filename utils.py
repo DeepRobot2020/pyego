@@ -431,6 +431,7 @@ def get_kite_image_files(kite_base=None, video_format = '2x2', skip_images_facto
         x4_imgs = sync_navcam_collected_images(kite_base)
         return x4_imgs 
     img_files = sorted(glob.glob(kite_base + '/*.jpg'))
+    
     if skip_images_factor > 0:
         img_files = img_files[::skip_images_factor]
     return img_files 

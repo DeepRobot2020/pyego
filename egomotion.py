@@ -15,6 +15,7 @@ from datetime import datetime
 import argparse
 import matplotlib.pyplot as plt
 from ImageImuSyncer import ImageImuSyncer
+from apc import ImageAPCSyncer
 
 from utils import *
 from cfg import *
@@ -394,7 +395,6 @@ class navcam:
         compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
         self.filter_inter_keypoints()
 
-
     def filter_intra_keypoints(self):
         img = None
         if self.prev_img is not None:
@@ -423,7 +423,6 @@ class navcam:
                 trans = self.calib_t
                 self.F = fundamental_matrix(rot, trans, K0, K1)
             ep_err = epi_constraint(self.flow_kpt0, self.flow_kpt3, self.F)
-            # import pdb; pdb.set_trace()
             for ct, (err, pt1, pt3, pt4) in enumerate(zip(ep_err, self.flow_kpt0, self.flow_kpt3, self.flow_kpt4)):
                 x1, y1 = (pt1[0][0], pt1[0][1])
                 x3, y3 = (pt3[0][0], pt3[0][1])
@@ -625,17 +624,22 @@ class EgoMotion:
         self.ned_vel_err = np.zeros([3,1])
         self.vel_covar = np.zeros([6,1])
 
+        self.prev_rot = np.identity(3)
+        self.prev_trans = np.zeros((3,1))
+
         if self.dataset.lower() == 'kitti':
             self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
+            self.camera_images.sort(key=lambda f: int(filter(str.isdigit, f)))
             # import pdb; pdb.set_trace()
             self.num_imgs  = len(self.camera_images[0])
             self.num_cams = len(self.camera_images)
         elif self.dataset.lower() == 'kite':
             self.camera_images = get_kite_image_files(input_path, KITE_VIDEO_FORMAT, KITE_SKIP_IMAGE_FACTOR)
+            self.camera_images.sort(key=lambda f: int(filter(str.isdigit, f)))
             self.num_imgs  = len(self.camera_images)
             self.num_cams = 4
-            self.syncer = ImageImuSyncer(ACS_META, INPUT_IMAGE_PATH)
-
+            if ACS_META:
+                self.syncer = ImageAPCSyncer(ACS_META, START_TS)
         else:
             raise ValueError('Unsupported dataset')
 
@@ -697,9 +701,9 @@ class EgoMotion:
         self.pose_t = np.zeros((3, 1))
         self.pose_R = np.eye(3)
 
-        if DATASET == 'kite':
+        if DATASET == 'kite' and self.syncer:
             body_to_world_trans, body_to_world_eular_xyz = self.syncer.get_initial_pose()
-            self.initial_origin = body_to_world_trans
+            self.initial_origin = np.array(body_to_world_trans)
             self.pose_R = eulerAnglesToRotationMatrix(body_to_world_eular_xyz)
 
         # Compute the fundamental matrix
@@ -769,10 +773,9 @@ class EgoMotion:
         self.img_idx += 1
         for c in range(self.num_cams):        
             self.navcams[c].update_image(imgs_x4)        
-        if ts is not None and DATASET == 'kite':
+        if ts is not None and DATASET == 'kite' and self.syncer:
             self.prev_acsmeta = self.curr_acsmeta
             self.curr_acsmeta = self.syncer.find_closest_acs_metadata(ts)
-            error = ts - self.curr_acsmeta[0]
 
     def compute_acsmeta_transformation_1_to_0(self):
         if self.curr_acsmeta is None or self.prev_acsmeta is None:
@@ -814,6 +817,8 @@ class EgoMotion:
                     #img_bgr.append(tmp)
                 #img_ = concat_images_list(img_bgr)
                 #cv2.imwrite('/tmp/' + str(img_idx) + '.jpg', img_)
+            # import pdb; pdb.set_trace()
+            ts = self.syncer.img_ts[img_idx]
             return img, ts
         else:
             raise ValueError('read_one_image failed: unsupported dataset')
@@ -982,22 +987,25 @@ class EgoMotion:
                 return rot, trans, cam_idx, mono_rotation, mono_translation
         return None, None, -1, None, None
 
+    def update_pose_by_prev_motion(self):
+        
+        return self.update_global_camera_pose_egomotion(self.prev_rot, self.prev_trans)
+
     def egomotion_solver(self, img_idx=None, ts = None, cam_list=[0, 1], est=None, debug_json_path=None):
         if img_idx is None or img_idx == 0:
-            return None, None
+            return self.update_pose_by_prev_motion()
 
         num_cams = len(cam_list)
         cam_obs = np.zeros([num_cams, 2], dtype=np.int)
         y_meas = None
 
-        time_diff_image = (ts - self.prev_ts) / 1e6
-        time_diff = min(0.1, time_diff_image)
+        time_diff_image = (ts - self.prev_ts) / 1e3
+        time_diff = min(0.067, time_diff_image)
 
-        if DATASET == 'kite':
-            Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
-            Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
-            angular_vel0, linear_vel_ned0 = get_angular_linear_velocity_from_acsmeta(self.curr_acsmeta)
-
+        # if DATASET == 'kite' and self.syncer:
+        #     Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
+        #     Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+        #     angular_vel0, linear_vel_ned0 = get_angular_linear_velocity_from_acsmeta(self.curr_acsmeta)
 
         if EGOMOTION_SEED_OPTION == 0:
             # Estimate each camera's local egomotion by 5 point algorithm   
@@ -1005,44 +1013,51 @@ class EgoMotion:
 
             if camera_index == -1:
                 print('error: no initial estimation from 5 point are avalaible')
-                return None, None
+                return self.update_pose_by_prev_motion()
             x0 = np.vstack([rot0, trans0])
         else:
             if not self.prev_invalid and 0:
                 x0 = self.prev_egomotion.reshape(6,1)
-            elif ts is not None and self.syncer is not None:
-                if angular_vel0 is not None and linear_vel_ned0 is not None:
-                    linear_vel0 = Rw0.T.dot(linear_vel_ned0)
+            elif ts is not None and self.syncer is not None:                
+                # angular_vel0, linear_vel0 = self.syncer.get_closest_velocity(ts)
+                angular_vel0 = 0
+                if angular_vel0 is not None:
+                    Rw0, diff= self.syncer.get_closest_orentation(ts)
+                    # linear_vel0 = Rw0.T.dot(linear_vel_ned0)
 
-                    imu_rot_est = angular_velocity_to_rotation_matrix(angular_vel0, time_diff)
-                    imu_trans_est = linear_velocity_to_translation(linear_vel0, time_diff)  
+                    # imu_rot_est = angular_velocity_to_rotation_matrix(angular_vel0, time_diff)
+                    # imu_trans_est = linear_velocity_to_translation(linear_vel0, time_diff)  
+                    # init_motion_angle,  imu_trans_est = self.syncer.get_init_motion(ts)
+                  
+                    # imu_rot_est = cv2.Rodrigues(init_motion_angle)[0]
+                    # pose_rot, pose_trans_bd, time_diff_pose = self.compute_acsmeta_transformation_1_to_0()
+                    # pose_ang_vel = cv2.Rodrigues(pose_rot)[0] / time_diff_pose
 
-                    pose_rot, pose_trans_bd, time_diff_pose = self.compute_acsmeta_transformation_1_to_0()
-                    pose_ang_vel = cv2.Rodrigues(pose_rot)[0] / time_diff_pose
+                    # pose_lin_vel = pose_trans_bd / time_diff_pose
+                    # pose_lin_vel_ned = Rw0.dot(pose_lin_vel)
 
-                    pose_lin_vel = pose_trans_bd / time_diff_pose
-                    pose_lin_vel_ned = Rw0.dot(pose_lin_vel)
-
-                    pose_rot_est = angular_velocity_to_rotation_matrix(pose_ang_vel, time_diff)
-                    pose_trans_est = linear_velocity_to_translation(pose_lin_vel, time_diff)  
+                    # pose_rot_est = angular_velocity_to_rotation_matrix(pose_ang_vel, time_diff)
+                    # pose_trans_est = linear_velocity_to_translation(pose_lin_vel, time_diff)  
 
                     # Conver body transformation from body to camera0
                     if EGOMOTION_SEED_OPTION == 1:
-                        rotation0, translation0 = transform_egomotion_from_frame_a_to_b(
-                                imu_rot_est, 
-                                imu_trans_est, 
-                                self.rotation_body_to_cam0, 
-                                self.translation_body_to_cam0)
+                        x0 = self.syncer.get_init_motion(ts).ravel().reshape(-1, 1)
+                        # rotation0, translation0 = transform_egomotion_from_frame_a_to_b(
+                        #         imu_rot_est, 
+                        #         imu_trans_est, 
+                        #         self.rotation_body_to_cam0, 
+                        #         self.translation_body_to_cam0)
                     else:
                         rotation0, translation0 = transform_egomotion_from_frame_a_to_b(
                             pose_rot_est, 
                             pose_trans_est, 
                             self.rotation_body_to_cam0, 
-                            self.translation_body_to_cam0)
-
-                    x0 = np.vstack([cv2.Rodrigues(rotation0)[0], translation0])
+                            self.translation_body_to_cam0)                    
+                        x0 = np.vstack([cv2.Rodrigues(rotation0)[0], translation0])
  
+        # import pdb; pdb.set_trace()
         self.prev_ts = ts
+    
         json_data = {}
         json_data['egomotion'] = {}
         json_data['egomotion']['initial'] = x0.ravel().tolist()
@@ -1128,11 +1143,9 @@ class EgoMotion:
                 try:
                     avg_dept = np.mean(points013[:,2])
                     points01, terr01_0, terr01_1 = triangulate_3d_points(flow0, flow1, K0, K0, egomotion_rotation, egomotion_translation)
-                    # flow0_h = cv2.convertPointsToHomogeneous(flow0).reshape(-1,3)
-                    # points01 = np.dot(inv(K0), (flow0_h * avg_dept).T).T
                 except:
-                    # import pdb; pdb.set_trace()
-                    return self.pose_R, self.pose_t
+                    return self.update_pose_by_prev_motion()
+
 
                 x0 = np.vstack([x0, points01.ravel().reshape(-1, 1)])
                 flow01_z = np.vstack([flow0, flow1])
@@ -1146,7 +1159,7 @@ class EgoMotion:
             cam_obs[index][1] = n_obs_j
 
         if y_meas is None or y_meas.shape[0] < 9:
-            return self.pose_R, self.pose_t
+            return self.update_pose_by_prev_motion()
 
         x0 = x0.flatten()
 
@@ -1160,12 +1173,12 @@ class EgoMotion:
         try:
             res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), jac_sparsity=sparse_A, **LS_PARMS)
         except:
-            return self.pose_R, self.pose_t
+            return self.update_pose_by_prev_motion()
         
         err1 = self.global_fun(res.x, cam_obs, y_meas, cam_list)
 
         if res is None:
-            return self.pose_R, self.pose_t
+            return self.update_pose_by_prev_motion()
 
 
         jac = res.jac.toarray()
@@ -1226,44 +1239,45 @@ class EgoMotion:
             linear_vel_ned1 = Rw0.dot((acs_trans / time_diff).reshape(3,1))
         
 
-            for i in range(3):
-                err = abs(abs(linear_vel_ned1[i]) - abs(pose_lin_vel_ned[i])) / abs(pose_lin_vel_ned[i])
-                self.ned_vel_err[i] = err * 100
+            # for i in range(3):
+            #     err = abs(abs(linear_vel_ned1[i]) - abs(pose_lin_vel_ned[i])) / abs(pose_lin_vel_ned[i])
+            #     self.ned_vel_err[i] = err * 100
 
-            for i in range(3):
-                err = abs(abs(linear_vel_ned1[i]) - abs(pose_lin_vel_ned[i])) / abs(pose_lin_vel_ned[i])
-                self.ned_vel_err[i] = err * 100
+            # for i in range(3):
+            #     err = abs(abs(linear_vel_ned1[i]) - abs(pose_lin_vel_ned[i])) / abs(pose_lin_vel_ned[i])
+            #     self.ned_vel_err[i] = err * 100
 
-            print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (
-                pose_ang_vel[0], 
-                pose_ang_vel[1], 
-                pose_ang_vel[2], 
-                angular_vel1[0], 
-                angular_vel1[1], 
-                angular_vel1[2]))
+            # print('ang_vel [%.3f, %.3f, %.3f] vs [%.3f, %.3f, %.3f]' % (
+            #     pose_ang_vel[0], 
+            #     pose_ang_vel[1], 
+            #     pose_ang_vel[2], 
+            #     angular_vel1[0], 
+            #     angular_vel1[1], 
+            #     angular_vel1[2]))
 
-            print('linear_vel_err [%.2f%%, %.2f%%, %.2f%%]' % (
-                self.ned_vel_err[0], 
-                self.ned_vel_err[1], 
-                self.ned_vel_err[2]))
+            # print('linear_vel_err [%.2f%%, %.2f%%, %.2f%%]' % (
+            #     self.ned_vel_err[0], 
+            #     self.ned_vel_err[1], 
+            #     self.ned_vel_err[2]))
 
         # import pdb; pdb.set_trace()
 
         if avg_reprojection_err > AVG_REPROJECTION_ERROR:
             self.prev_invalid = True
             print('reject the results: reprojection error: ' + str(reprojection_err) + ' avg reprjection error: ' + str(avg_reprojection_err))
-            return self.pose_R, self.pose_t
+            return self.update_pose_by_prev_motion()
         
         self.prev_egomotion = res.x[0:6]
         self.prev_invalid = False
 
         if DATASET == 'kite':
-            self.fc_angular_velocity = angular_vel0
-            self.fc_linear_velocity = linear_vel_ned0
-
+        #     self.fc_angular_velocity = angular_vel0
+        #     self.fc_linear_velocity = linear_vel_ned0
             self.est_angular_velocity = angular_vel1
             self.est_linear_velocity = linear_vel_ned1
-
+            self.prev_rot = acs_rot
+            self.prev_trans = acs_trans
+        
         pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
         return pose_R, pose_t 
         
@@ -1296,8 +1310,8 @@ def _main(args):
 
     traj = np.zeros((960, 1280, 3), dtype=np.uint8)
 
-    text = "Aircraft Moving E/W"
-    cv2.putText(traj, text, (700, 58), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+    # text = "Aircraft Moving E/W"
+    # cv2.putText(traj, text, (700, 58), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
     
     text = "N/E Traj by Fight Control"
     cv2.line(traj,(700, 78),(750, 78),(255,255,255),2)
@@ -1384,7 +1398,7 @@ def _main(args):
             true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueZ) + draw_ofs_y
         else:
             draw_x0, draw_y0 = int(x) + draw_ofs_x, int(y) + draw_ofs_y  
-            current_true_pose = kv.get_acsmeta_pose()
+            current_true_pose = np.array(kv.get_acsmeta_pose())
 
             if current_true_pose is not None:
                 global_positon = current_true_pose.reshape(1,3) - kv.initial_origin.reshape(1,3)
@@ -1409,14 +1423,14 @@ def _main(args):
                 100 * abs(abs(kv.trueY) - abs(y)) / abs(y),
                 100 * abs(abs(kv.trueZ) - abs(z)) / abs(z))
 
-            text2 = "Linear Velocity Err: [N: %8.1f%%, E: % 8.1f%%, D: % 8.1f%%]"%(
-                kv.ned_vel_err[0], 
-                kv.ned_vel_err[1], 
-                kv.ned_vel_err[2])
+            # text2 = "Linear Velocity Err: [N: %8.1f%%, E: % 8.1f%%, D: % 8.1f%%]"%(
+            #     kv.ned_vel_err[0], 
+            #     kv.ned_vel_err[1], 
+            #     kv.ned_vel_err[2])
 
-            cv2.putText(traj, text, (700,140), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1, 8)
-            cv2.putText(traj, text1, (700,160), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1, 8)
-            cv2.putText(traj, text2, (700,180), cv2.FONT_HERSHEY_PLAIN, 2, (255,255,255), 1, 8)
+            cv2.putText(traj, text, (700,140), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+            cv2.putText(traj, text1, (700,160), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
+            # cv2.putText(traj, text2, (700,180), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
 
         img_bgr = []
         for i in CAMERA_LIST:
