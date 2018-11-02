@@ -17,15 +17,18 @@ if DATASET == 'kitti':
 else:
     # configs for KITI dataset
     KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
-    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/Oct.5/cap'
+    INPUT_IMAGE_PATH = '/home/jzhang/vo_data/SR80_901020874/2018-11-01/Split/seg07'
     INPUT_CALIB_PATH ='/home/jzhang/vo_data/SR80_901020874/nav_calib.cfg'
-    ACS_META = ['/home/jzhang/vo_data/SR80_901020874/Oct.5/2018-10-05/2018-10-05-flight_001/aeryon_journal_log']
+    # ACS_META = ['/home/jzhang/vo_data/SR80_901020874/Oct.5/2018-10-05/2018-10-05-flight_001/aeryon_journal_log']
+    ACS_META = '/home/jzhang/vo_data/SR80_901020874/2018-11-01/2018-11-01/2018-11-01-flight_001/log.blog.json'
     KITE_UNDISTORION_NEEDED = True
     EGOMOTION_SEED_OPTION = 1 # 0: 5 point algorithem, 1: Velocity 2: Pose 3: prev
     KITE_SKIP_IMAGE_FACTOR = 0
     # KITE_OUTPUT_POSE_PATH = '/tmp/kite/kv_egomotion.json'
 
 KITE_OUTPUT_POSE_PATH = '/tmp/kite/avl.json'
+START_TS = 696890
+
 # KITE_OUTPUT_POSE_PATH = '/home/jzhang/kite.pyflow/avl.json'
 
 KITE_OUTPUT_POSE_PATH = None
@@ -39,7 +42,7 @@ IMU_TO_BODY_ROT = np.array([0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0, 1]).res
 # Features for egomotion
 AVG_REPROJECTION_ERROR = 2.5
 USE_01_FEATURE = True
-TWO_VIEW_FEATURE_WEIGHT = 0.5 
+TWO_VIEW_FEATURE_WEIGHT = 1.0 
 
 DEBUG_KEYPOINTS = True
 
@@ -47,7 +50,7 @@ KITE_KPTS_PATH = '/tmp/kite/'
 
 SHI_TOMASI_MIN_DISTANCE  = 8
 SHI_TOMASI_QUALITY_LEVEL = 0.01
-MAX_NUM_KEYPOINTS        = 64 
+MAX_NUM_KEYPOINTS        = 96 
 SCIPY_LS_VERBOSE_LEVEL   = 0
 
 FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
@@ -58,8 +61,8 @@ INTRA_OPTFLOW_WIN_SIZE = (16, 16)
 INTER_OPTFLOW_WIN_SIZE = (16, 16)
 
 # Constans control the egomotion feature erros
-INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD = 25
-INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD = 25
+INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD = 20
+INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD = 20
 
 INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD = 0.5
 INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD = 0.5

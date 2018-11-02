@@ -125,8 +125,9 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
 
 def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
-    K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
-    import pdb; pdb.set_trace()
+    # K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
+    # import pdb; pdb.set_trace()
+    print(K0)
     return K0
 
 def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
@@ -437,6 +438,7 @@ def get_kite_image_files(kite_base=None, video_format = '2x2', skip_images_facto
         x4_imgs = sync_navcam_collected_images(kite_base)
         return x4_imgs 
     img_files = sorted(glob.glob(kite_base + '/*.jpg'))
+    
     if skip_images_factor > 0:
         img_files = img_files[::skip_images_factor]
     return img_files 
