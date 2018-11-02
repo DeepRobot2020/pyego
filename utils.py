@@ -86,11 +86,9 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
     corners = np.array(corners, dtype=np.float32)
     corners = corners.reshape(len(corners), 1, 2)
 
-    corners = cv2.fisheye.undistortPoints(corners, K, D, np.eye(3))
-    # corners = kiteFishEyeUndistortPoints(corners, K, D, np.eye(3)) 
+    corners = kiteFishEyeUndistortPoints(corners, K, D, np.eye(3)) 
 
-    center_mass = np.mean(corners)
-    cn = np.array([center_mass, center_mass])
+    cn = np.array([np.mean(corners[:,0,0]), np.mean(corners[:,0,1])])
 
     aspect_ratio = K[0][0] / K [1][1]
     cn[0] *= aspect_ratio
@@ -111,12 +109,10 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
     fmax = max(f1, max(f2, max(f3, f4)))
 
     f = balance * fmin + (1.0 - balance) * fmax
-
     new_f = [f, f / aspect_ratio]
     new_c = -cn * f + np.array([w, h * aspect_ratio]) * 0.5
     # restore aspect ratio
-    new_c[1] /= aspect_ratio
-
+  
     new_K = np.array([new_f[0], 0.0, new_c[0], 
              0.0, new_f[1], new_c[1], 
              0.0, 0.0, 1.0]).reshape(3, 3)
@@ -125,8 +121,6 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
 
 def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
-    K1 = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (640, 480), np.eye(3), balance=balance)
-    import pdb; pdb.set_trace()
     return K0
 
 def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):

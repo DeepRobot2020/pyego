@@ -97,12 +97,12 @@ ACS_ORIENTATION_THETA_DOT = 12
 ACS_ORIENTATION_PSI_DOT   = 13
 
 
-vertices_large_0 = np.array([ (557, 0), (639, 0), (639, 105), (436, 293), (386, 272), (557, 0)], dtype=np.int32)
-vertices_small_0 = np.array([(0, 247), (134, 264), (134, 305), (0, 277), (0, 247)], dtype=np.int32) 
+vertices_large_0 = np.array([ (557, 0), (639, 0), (639, 125), (436, 293), (386, 272), (557, 0)], dtype=np.int32)
+vertices_small_0 = np.array([(0, 217), (134, 244), (134, 295), (0, 247), (0, 217)], dtype=np.int32) 
 vertices0 = [vertices_large_0, vertices_small_0]
 
-vertices_large_1 = np.array([ (0, 0), (70, 0), (256, 292), (238, 318), (0, 136), (0, 0)], dtype=np.int32) 
-vertices_small_1 = np.array([ (511, 266), (639, 238), (639, 271), (515, 288), (511, 266)], dtype=np.int32) 
+vertices_large_1 = np.array([ (0, 0), (70, 0), (266, 278), (244, 308), (0, 126), (0, 0)], dtype=np.int32) 
+vertices_small_1 = np.array([ (533, 246), (639, 228), (639, 265), (542, 277), (533, 246)], dtype=np.int32) 
 vertices1 = [vertices_large_1, vertices_small_1]
 
 
@@ -111,8 +111,8 @@ vertices_small_2 = np.array([(0, 227), (124, 262), (105, 302), (0, 267),(0, 227)
 vertices2 = [vertices_large_2, vertices_small_2]
 
 
-vertices_large_3 = np.array([(0, 0), (94, 0), (258, 285), (225, 316), (0, 136), (0, 0)], dtype=np.int32) 
-vertices_small_3 = np.array([(540, 285), (639, 261), (639, 285), (550, 308), (540, 285)], dtype=np.int32) 
+vertices_large_3 = np.array([(0, 0), (94, 0), (278, 275), (260, 296), (0, 126), (0, 0)], dtype=np.int32) 
+vertices_small_3 = np.array([(543, 246), (639, 225), (639, 265), (557, 274), (543, 246)], dtype=np.int32) 
 vertices3 = [vertices_large_3, vertices_small_3]
 
 KITE_MASK_VERTICES = []

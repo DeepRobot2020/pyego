@@ -324,13 +324,13 @@ class navcam:
         roi_mask = None
         if DATASET == 'kite':
             roi_mask = region_of_interest_mask(self.curr_img.shape, KITE_MASK_VERTICES[self.index])
-            # mask = np.zeros(self.curr_img.shape, dtype=np.uint8) 
-            # mask.fill(255)
-            # cv2.fillPoly(mask, KITE_MASK_VERTICES[self.index], 0)
-            # maskedImg = cv2.bitwise_and(self.curr_img, mask)
+            mask = np.zeros(self.curr_img.shape, dtype=np.uint8) 
+            mask.fill(255)
+            cv2.fillPoly(mask, KITE_MASK_VERTICES[self.index], 0)
+            maskedImg = cv2.bitwise_and(self.curr_img, mask)
 
-            # plt.imshow(maskedImg)
-            # plt.show();
+            plt.imshow(maskedImg)
+            plt.show();
         self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, 
                                                     quality_level = SHI_TOMASI_QUALITY_LEVEL,
                                                     min_distance = SHI_TOMASI_MIN_DISTANCE, 
@@ -1170,7 +1170,7 @@ class EgoMotion:
 
         jac = res.jac.toarray()
         # Compute covariance
-        self.vel_covar = covariance_mvg_A6_4(jac)
+        # self.vel_covar = covariance_mvg_A6_4(jac)
         # json_data['egomotion']['covariance'] = covar.diagonal.ravel().tolist()
 
         t1 = datetime.now()
