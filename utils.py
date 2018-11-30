@@ -119,18 +119,20 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
 
     return new_K
 
-def correct_kite_camera_matrix(K, D, dim = (640, 480), balance = 0.0):
+def correctCameraMatrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
     return K0
 
-def undistort_kite_image(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
+def undistortImage(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
     map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_org, D, np.eye(3), K_new, dim, cv2.CV_16SC2)
     undistorted_img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
     return undistorted_img
 
 
-def kite_stereo_rectify(K1, D1, K2, D2, R, t, dim = (640, 480)):
-    return cv.fisheye.stereoRectif(K1, D1, K2, D2, dim, R, t)
+def fisheyeStereoRectify(K1, D1, K2, D2, R12, t12, zeroDisparity=True, imageSize=(640, 480)):
+    flags = cv2.CALIB_ZERO_DISPARITY if zeroDisparity else 0
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(K1, D1, K2, D2, imageSize, R12, t12, flags)
+    return R1, R2, P1, P2, Q
 
 
 def gaussian_blur(img, kernel=(5,5)):
@@ -188,6 +190,7 @@ def concat_images(imga, imgb):
 
 def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
     descriptor = cv2.ORB_create()
+    # import pdb; pdb.set_trace()
     # descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
     for i in range(k0.shape[0]):
         if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
@@ -206,7 +209,7 @@ def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
         if des_distance > descriptor_threshold:
             k1[i][0][0] = -99.0
             k1[i][0][1] = -99.0
-
+    # import pdb; pdb.set_trace()
 def descriptor_hamming_distance(des1, des2):
     dist = 0
     for d1, d2 in zip(des1[0].tolist(), des2[0].tolist()):
@@ -472,18 +475,6 @@ def undistort(img_path, K, D):
     undistorted_img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
     return undistorted_img
 
-def fast_keypoints_detection(undistorted_img):
-    fast = cv2.FastFeatureDetector_create(threshold=70, nonmaxSuppression=True)
-    kpts = fast.detect(undistorted_img)
-    out = []
-    for kp in kpts:
-        x = kp.pt[0] + 20
-        y = kp.pt[1] + 21
-        kp.pt = (x, y)
-        kpt0 = np.array(kp.pt).reshape(1,2)
-        out.append(kpt0.astype(np.float32))
-    return np.array(out)
-
 def translateImage3D(img, K_mtx, t):
     tx, ty, tz = t
     T = np.eye(4)
@@ -510,6 +501,19 @@ def shi_tomasi_corner_detection(img, quality_level = 0.01, min_distance = 8, roi
                         mask = roi_mask)
     return cv2.goodFeaturesToTrack(img, **feature_params)
 
+def fast_keypoints_detection(undistorted_img):
+    fast = cv2.FastFeatureDetector_create(threshold=70, nonmaxSuppression=True)
+    kpts = fast.detect(undistorted_img)
+    out = []
+    for kp in kpts:
+        x = kp.pt[0] + 20
+        y = kp.pt[1] + 21
+        kp.pt = (x, y)
+        kpt0 = np.array(kp.pt).reshape(1,2)
+        out.append(kpt0.astype(np.float32))
+    return np.array(out)
+
+    
 def epi_constraint(pts1, pts2, F):
     pts1 = pts1.reshape(pts1.shape[0], -1)
     pts2 = pts2.reshape(pts2.shape[0], -1)
@@ -543,7 +547,6 @@ def epiline(pt, F):
 
 def rectify_camera_pairs(cam0_img, cam1_img, K0, K1, D0, D1, R, T, img_size = (640, 480)):    
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(K0, D0, K1, D1, img_size, R, T)
-
     left_maps = cv2.initUndistortRectifyMap(K0, D0, R1, P1, img_size, cv2.CV_16SC2)
     right_maps = cv2.initUndistortRectifyMap(K1, D1, R2, P2, img_size, cv2.CV_16SC2)
     left_img_remap = cv2.remap(cam0_img, left_maps[0], left_maps[1], cv2.INTER_LANCZOS4)
@@ -651,6 +654,7 @@ def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (18, 18)):
                     maxLevel = 4,
                     minEigThreshold=1e-4,
                     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 4, 0.01))
+                    
     # perform a forward match
     flow_kpt1, st, err = cv2.calcOpticalFlowPyrLK(curr_im, target_im, flow_kpt0, None, **lk_params)
     # perform a reverse match
@@ -888,6 +892,19 @@ def transform_egomotion_from_frame_a_to_b(egomotion_rotation_a, egomotion_transl
     return egomotion_rotation_b, egomotion_translation_b
     
 
+def transform_velocity_from_frame_a_to_b(ang_vel_a, lin_vel_a, rotation_a_to_b, translation_a_to_b):
+    '''Transform velocity from frame a to b
+    '''
+    translation_a_to_b_cross = np.array([0,                     -translation_a_to_b[2], translation_a_to_b[1], 
+                                         translation_a_to_b[2],  0,                     -translation_a_to_b[0], 
+                                         -translation_a_to_b[1], translation_a_to_b[0], 0]).reshape(3, 3)
+    t_cross_R = translation_a_to_b_cross.dot(rotation_a_to_b)
+
+    lin_vel_b = rotation_a_to_b.dot(lin_vel_a.reshape(3, 1)) + t_cross_R.dot(ang_vel_a.reshape(3, 1))
+    ang_vel_b = rotation_a_to_b.dot(ang_vel_a.reshape(3, 1))
+    return ang_vel_b, lin_vel_b
+    
+
 def angular_velocity_to_rotation_matrix(w = [0.0, 0.0, 0.0], dt = 0.0):
     wx, wy, wz = w[0], w[1], w[2]
     # construct a unit quaternion from an identity matrix
@@ -908,6 +925,51 @@ def angular_velocity_to_rotation_matrix(w = [0.0, 0.0, 0.0], dt = 0.0):
 
 def linear_velocity_to_translation(v = [0.0, 0.0, 0.0], dt = 0.0):
     return np.array([v[0]*dt, v[1]*dt, v[2]*dt]).reshape(3, 1)
+
+
+
+# Checks if a matrix is a valid rotation matrix.
+def isRotationMatrix(R) :
+    Rt = np.transpose(R)
+    shouldBeIdentity = np.dot(Rt, R)
+    I = np.identity(3, dtype = R.dtype)
+    n = np.linalg.norm(I - shouldBeIdentity)
+    return n < 1e-6
+
+def rotationMatrixToEulerAngles(R) :
+    assert(isRotationMatrix(R))
+    sy = math.sqrt(R[0,0] * R[0,0] +  R[1,0] * R[1,0])
+    singular = sy < 1e-6
+    if  not singular :
+        x = math.atan2(R[2,1] , R[2,2])
+        y = math.atan2(-R[2,0], sy)
+        z = math.atan2(R[1,0], R[0,0])
+    else :
+        x = math.atan2(-R[1,2], R[1,1])
+        y = math.atan2(-R[2,0], sy)
+        z = 0
+    return np.array([x, y, z])
+
+def eulerAnglesToRotationMatrix(theta) :
+     
+    R_x = np.array([[1,         0,                  0                   ],
+                    [0,         math.cos(theta[0]), -math.sin(theta[0]) ],
+                    [0,         math.sin(theta[0]), math.cos(theta[0])  ]
+                    ])
+
+    R_y = np.array([[math.cos(theta[1]),    0,      math.sin(theta[1])  ],
+                    [0,                     1,      0                   ],
+                    [-math.sin(theta[1]),   0,      math.cos(theta[1])  ]
+                    ])
+                 
+    R_z = np.array([[math.cos(theta[2]),    -math.sin(theta[2]),    0],
+                    [math.sin(theta[2]),    math.cos(theta[2]),     0],
+                    [0,                     0,                      1]
+                    ])
+                     
+                     
+    R = np.dot(R_z, np.dot( R_y, R_x ))
+    return R
 
 # ref
 # http://danceswithcode.net/engineeringnotes/rotations_in_3d/rotations_in_3d_part1.html
@@ -931,27 +993,30 @@ def eular_angle_to_rotation_matrix(eular):
     m22 = cu * cv 
     return np.array([m00, m01, m02, m10, m11, m12, m20, m21, m22]).reshape(3,3)
 
+def orientation_correction(est_ned_vel, gps_ned_vel, est_rot):
+    fc_eular = rotationMatrixToEulerAngles(est_rot)
 
-def eulerAnglesToRotationMatrix(theta) :
-     
-    R_x = np.array([[1,         0,                  0                   ],
-                    [0,         math.cos(theta[0]), -math.sin(theta[0]) ],
-                    [0,         math.sin(theta[0]), math.cos(theta[0])  ]
-                    ])
+    u =  np.linspace(-math.pi/16.0, math.pi/16.0, 1e2) + np.array(fc_eular[0])
+    v =  np.linspace(-math.pi/16.0, math.pi/16.0, 1e2) + np.array(fc_eular[1])
+    w =  np.linspace(-math.pi/16.0, math.pi/16.0, 1e2) + np.array(fc_eular[2])
 
-    R_y = np.array([[math.cos(theta[1]),    0,      math.sin(theta[1])  ],
-                    [0,                     1,      0                   ],
-                    [-math.sin(theta[1]),   0,      math.cos(theta[1])  ]
-                    ])
-                 
-    R_z = np.array([[math.cos(theta[2]),    -math.sin(theta[2]),    0],
-                    [math.sin(theta[2]),    math.cos(theta[2]),     0],
-                    [0,                     0,                      1]
-                    ])
-                     
-                     
-    R = np.dot(R_z, np.dot( R_y, R_x ))
-    return R
+    min_err = 1e10
+    min_eular = None
+    for ui in u:
+        for vi in v:
+            for wi in w:
+                eulari = [ui, vi, wi]
+                rot_3x3 = eular_angle_to_rotation_matrix(eulari)
+                est_gps_ned_vel = rot_3x3.dot(est_ned_vel)
+                err = norm(np.absolute(gps_ned_vel - est_gps_ned_vel))
+                if err < min_err:
+                    min_err = err
+                    min_eular = eulari
+                    print(est_gps_ned_vel, gps_ned_vel)
+                    if err < 0.01:
+                        break
+    import pdb; pdb.set_trace()
+
 
 def get_translation_from_acsmeta(msg):
     return np.array([msg[ACS_POSITION_X], msg[ACS_POSITION_Y], msg[ACS_POSITION_Z]], dtype=np.float32).reshape(3,1)
@@ -976,12 +1041,14 @@ def get_angular_linear_velocity_from_acsmeta(msg):
 # Taken from python curve fit covariance estimation code
 def covarinace_svd(jac):
     _, s, VT = np.linalg.svd(jac, full_matrices=False)
-    threshold = np.finfo(float).eps * max(res.jac.shape) * s[0]
+    threshold = np.finfo(float).eps * max(jac.shape) * s[0]
     s = s[s > threshold]
     VT = VT[:s.size]
     pcov = np.dot(VT.T / s**2, VT)
+    # import pdb; pdb.set_trace()
+    return pcov[0:6, 0:6]
 
-def covariance_mvg_A6_4(jac): 
+def covariance_mvg_A6_4(jac, mask): 
     # Estimate the covariance of the motion paramters by MVG Algorithm A6.4.
     hessian = jac.T.dot(jac)
     # with shape (6 + num_points * 3) x (6 + num_points)
@@ -994,10 +1061,11 @@ def covariance_mvg_A6_4(jac):
 
     sum_i = np.zeros_like(U)
     for i in range(n_points):
-        W_i = W[:,i * 3 : (i + 1) * 3]
-        V_i = V[i * 3 : i * 3 + 3,i * 3 : i * 3 + 3]
-        V_i_inv = np.linalg.inv(V_i)
-        sum_i += (W_i.dot(V_i_inv)).dot(W_i.T)
+        if mask[i]:
+            W_i = W[:,i * 3 : (i + 1) * 3]
+            V_i = V[i * 3 : i * 3 + 3,i * 3 : i * 3 + 3]
+            V_i_inv = np.linalg.inv(V_i)
+            sum_i += (W_i.dot(V_i_inv)).dot(W_i.T)
     S = U - sum_i
     S_inv = np.linalg.inv(S)
     return S_inv
@@ -1012,3 +1080,4 @@ def visualize_sparsity_jacobian(jac):
     ax2.spy(jac.T.dot(jac), markersize=5)
     show()
 
+    
