@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd 
 import argparse
 import csv 
+import cv2
 from pyquaternion import Quaternion
 from vision_vo_msg_parser import  JsonApcLog
 import pickle
@@ -70,7 +71,6 @@ class KiteLog:
     def __init__(self, json_file, csv_file, flight_json_log):
         self.json_file = json_file    
         self.syncer = ImageAPCSyncer(json_file)
-        self.msg_list = ['gps_ned_vel', 'body_lin_vel', 'ned_lin_vel', 'body_lin_vel_conf', 'ned_lin_vel_conf', 'body_ang_vel_conf', 'time_ms']
         self.msg_dict_list = None
         self._inited = False
         self.parse_log_to_array()
@@ -91,6 +91,8 @@ class KiteLog:
         self.gps_vel_norm = None
         self.gps_ned_vel = None
         self.gps_time_ms = None
+
+        # import pdb; pdb.set_trace()
     
     def get_gps_ned_vel(self, start_time_ms = 0):
         if self.gps_time_ms is None:
@@ -110,11 +112,17 @@ class KiteLog:
             self.get_gps_ned_vel(start_time_ms)
         return self.gps_time_ms
 
-    def get_est_vel_norm(self):
+    def get_est_lin_vel_norm(self):
         if self.csv_data is None:
             return np.apply_along_axis(np.linalg.norm, 1, self.get_est_ned_vel())
         else:
             return np.apply_along_axis(np.linalg.norm, 1, self.get_csv_body_vel())
+
+    def get_est_ang_vel_norm(self):
+        # if self.csv_data is None:
+        #     return np.apply_along_axis(np.linalg.norm, 1, self.get_est_ned_vel())
+        # else:
+        return np.apply_along_axis(np.linalg.norm, 1, self.get_csv_ang_vel())
 
     def get_csv_time_ms(self):
         if self.csv_data is None:
@@ -125,6 +133,11 @@ class KiteLog:
         if self.csv_data is None:
             return None
         return self.csv_data[:,5:8]
+
+    def get_csv_ang_vel(self):
+        if self.csv_data is None:
+            return None
+        return self.csv_data[:,2:5]
 
     def get_csv_body_vel_conf(self):
         if self.csv_data is None:
@@ -140,6 +153,11 @@ class KiteLog:
         if self.csv_data is None:
             return None
         return self.csv_data[:,14:17]
+
+    def get_csv_vel_status(self):
+        if self.csv_data is None:
+            return None
+        return self.csv_data[:,-1]
 
     # def get_csv_ned_vel(self):
     #     csv_body_vel = self.get_csv_body_vel()
@@ -196,6 +214,16 @@ class KiteLog:
         return self.msg_dict_list['ned_lin_vel']
 
 
+    def get_init_ned_vel(self, dur=0.067):
+        init_motion = self.msg_dict_list['init_motion']
+        init_vel_norm = []
+        for m in init_motion:
+            init_lin_motion = np.array(m[3:6])
+            init_vel_norm.append(init_lin_motion / dur)
+        init_vel_norm = np.array(init_vel_norm)
+        norm = np.apply_along_axis(np.linalg.norm, 1, init_vel_norm)
+        return norm
+
     def get_est_time_ms(self):
         if self.csv_data is None:
             return self.msg_dict_list['time_ms']
@@ -205,8 +233,29 @@ class KiteLog:
     def get_est_body_vel(self):
         return self.msg_dict_list['body_lin_vel']
 
+
+    def rotate_est_body_vel(self):
+        body_vel = self.msg_dict_list['body_lin_vel']
+        Qest = self.msg_dict_list['kf4_Qest']
+        acs_aa = self.msg_dict_list['acs_est_orentation']
+        ned_vel = []
+        for i in range(len(body_vel)):
+            q0 = Quaternion(array=np.array(Qest[i]))
+            q0_rot_mtx = q0.rotation_matrix
+            rot_mtx = cv2.Rodrigues(acs_aa[i])[0]
+            vel = rot_mtx.dot(np.array(body_vel[i]))
+            ned_vel.append(vel)
+        ned_vel = np.array(ned_vel)
+        return np.array(ned_vel)
+
     def get_lin_vel_conf(self):
         return self.msg_dict_list['ned_lin_vel_conf']
+
+    def get_lin_vel_status(self):
+        try:
+            return self.msg_dict_list['status']
+        except:
+            return np.zeros_like(self.get_lin_vel_conf())
 
     def filter_est_vel(self, con_threshold):
         self.filter_json_vel(con_threshold)
@@ -248,18 +297,28 @@ class KiteLog:
         self.csv_ned_vel = None
 
     def plot_ned(self, threshold = 2.0):
-        plt.subplot(4, 1, 1)
-
         est_time_ms = self.get_est_time_ms()
-        est_norm = self.get_est_vel_norm()
+
+        if self.csv_data is None:
+            vel_status = self.get_lin_vel_status()
+        else:
+            vel_status = self.get_csv_vel_status()
+
+   
+        est_norm = self.get_est_lin_vel_norm()
+        est_norm_copy = est_norm.copy()
+        est_norm_copy[vel_status != 0] = np.nan
 
         gps_time_ms = self.get_gps_time_ms(est_time_ms[0])[0:len(est_time_ms)]
         gps_norm = self.get_gps_vel_norm(est_time_ms[0])[0:len(est_time_ms)]
 
-        plt.plot(est_time_ms, est_norm, 'bo', markersize=2)
+        init_vel_norm = self.get_init_ned_vel()[0:len(est_time_ms)]
+        plt.figure(1)
+        plt.title('Linear velocity Norm: VO vs GPS', fontsize='small')
+        plt.plot(est_time_ms, est_norm_copy, 'bo', markersize=2)
         plt.plot(gps_time_ms, gps_norm)
-        plt.title('Velocity Norm: VO vs GPS', fontsize='small')
 
+        plt.figure(2)
         titles = ['North Velocity VO vs GPS', 'East Velocity VO vs GPS', 'Down Velocity VO vs GPS']
         for i in range(1, 4):
             plt.subplot(4, 1, i+1)
@@ -267,21 +326,34 @@ class KiteLog:
             if self.csv_data is None:
                 est_vel = self.get_est_ned_vel()[:, i-1]
                 lin_ned_conf = self.get_lin_vel_conf()
+                vel_status = self.get_lin_vel_status()
             else:
+                # import pdb; pdb.set_trace()
+                # est_vel = self.rotate_est_body_vel()[:, i-1]
                 est_vel = self.get_csv_ned_vel()[:, i-1]
                 lin_ned_conf = self.get_csv_ned_vel_conf()
+                vel_status = self.get_csv_vel_status()
 
             good = est_vel.copy()
             bad = est_vel.copy()
-            good[lin_ned_conf[:, i-1] > threshold] = np.nan
-            bad[lin_ned_conf[:, i-1] < threshold] = np.nan
+
+            # good[lin_ned_conf[:, i-1] > threshold] = np.nan
+            good[vel_status != 0] = np.nan
+
+            # bad[lin_ned_conf[:, i-1] < threshold] = np.nan
+            bad[vel_status == 0] = np.nan
+
             n_good = np.count_nonzero(np.isnan(bad))
             n_bad = np.count_nonzero(np.isnan(good))
             print(n_good, n_bad)
             plt.plot(est_time_ms, good, 'bo', markersize=2)
             plt.plot(est_time_ms, bad, 'r+', markersize=3)
+
+            # import pdb; pdb.set_trace()
             plt.plot(gps_time_ms[0:len(est_vel)], self.get_gps_ned_vel()[0:len(est_vel), i-1])
+            
         plt.show()
+        # import pdb; pdb.set_trace()
 
     def write_to_csv(self, file_name):
         print('writing to a csv...', file_name)

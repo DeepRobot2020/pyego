@@ -4,6 +4,8 @@ import numpy as np
 import json
 import errno
 import pickle
+import cv2
+import math
 from pyquaternion import Quaternion
 import matplotlib.pyplot as plt
 
@@ -37,18 +39,37 @@ parser.add_argument(
     '--output_path',
     type=str,
     help='Output json path',
-    default='/tmp/vision_vo.json')
+    default='/tmp/vo.json')
 
 parser.add_argument(
     '-d',
     '--duration',
     type=float,
     help='frame duraton',
-    default=68.2)
+    default=67.5)
 
 
-MSG_NAMES = ['VISION_VO_MEAS', 'VISION_VO_DEBUG_INFO', 'AHRSSTATE', 'GPS_STATE', 'ACS_METADATA']
+MSG_NAMES = ['VISION_VO_MEAS', 'VISION_VO_DEBUG_INFO', 'AHRSSTATE', 'GPS_STATE', 'ACS_METADATA', 'SACS_']
 NUM_LOG_HEADER = 3
+
+def eularAngleToRotationMatrix(eular):
+    u = eular[0]; v = eular[1]; w = eular[2];
+    cu = math.cos(u); su = math.sin(u);
+    cv = math.cos(v); sv = math.sin(v);
+    cw = math.cos(w); sw = math.sin(w);
+
+    m00 = cu * cw
+    m01 = su * sv * cw - cu * sw
+    m02 = su * sw + cu * sv * cw;
+
+    m10 = cv * sw
+    m11 = cu * cw + su * sv * sw
+    m12 = cu * sv * sw - su * cw 
+
+    m20 = -sv
+    m21 = su * cv 
+    m22 = cu * cv 
+    return np.array([m00, m01, m02, m10, m11, m12, m20, m21, m22]).reshape(3,3)
 
 class JsonApcLog:
     def __init__(self, json_file, msg_list = MSG_NAMES):
@@ -59,26 +80,98 @@ class JsonApcLog:
             self.msg_dict[key] = {}
         self.array_dict = {}
         self.array_dict_init = False
+
         self.ahrs_data = []
-        self.gps_offset_err = []
+        self.gps_offset_err = []    
         self.gps_time_ms = []
         self.vo_time_ms = []
         self.first_gps_index = 0
         self.load_flight_log()
 
+    def AHRSSTATE_axis_angle(self):
+        Qest = self.msg_dict['AHRSSTATE']['kf4_Qest']
+        aa_array = []
+        for qu in Qest:
+            q0 = Quaternion(array=np.array(qu))
+            rot_mtx = q0.rotation_matrix
+            aa = cv2.Rodrigues(rot_mtx)[0]
+            aa_array.append(aa)
+        return np.array(aa_array).reshape(-1,3)
 
+    def ACS_METADATA_axis_angle(self):
+        eular_angles = self.msg_dict['ACS_METADATA']['orient_est']
+        aa_array = []
+        for angle in eular_angles:
+            rot = eularAngleToRotationMatrix(angle)
+            aa = cv2.Rodrigues(rot)[0]
+            aa_array.append(aa)
+        return np.array(aa_array).reshape(-1,3)
+
+    def get_orentation_from_acs_metadata(self, vo_acs_time_ms):
+        acs_aa = self.ACS_METADATA_axis_angle()
+        acs_time_ms = self.msg_dict['ACS_METADATA']['time_ms']
+        aa_matched = []
+        acs_matched_ms = []
+        for time_ms in vo_acs_time_ms:
+            idx = np.abs(acs_time_ms - time_ms).argmin()
+            aa_matched.append(acs_aa[idx])
+            acs_matched_ms.append(acs_time_ms[idx])
+        return np.array(aa_matched), np.array(acs_matched_ms)
+
+    def get_orentation_from_ahrs_state(self, vo_acs_time_ms):
+        ahrs_aa = self.AHRSSTATE_axis_angle()
+        ahrs_time_ms = self.msg_dict['AHRSSTATE']['time_ms']
+        aa_matched = []
+        matched_ms = []
+        for time_ms in vo_acs_time_ms:
+            idx = np.abs(ahrs_time_ms - time_ms).argmin()
+            aa_matched.append(ahrs_aa[idx])
+            matched_ms.append(ahrs_time_ms[idx])
+        return np.array(aa_matched), np.array(matched_ms)
+
+    def check_orentation(self):
+        vo_orientation = self.msg_dict['VISION_VO_DEBUG_INFO']['acs_est_orentation']
+        vo_acs_time_ms = self.msg_dict['VISION_VO_DEBUG_INFO']['nearest_acs_ms'][:,1]
+        
+        # Compare with ACS_METADATA
+        acs_aa, acs_time_ms = self.get_orentation_from_acs_metadata(vo_acs_time_ms)
+
+        plt.plot(acs_time_ms, acs_aa[:,0])
+        plt.plot(vo_acs_time_ms, vo_orientation[:,0])
+        plt.show()
+
+        ahrs_aa, ahrs_time_ms = self.get_orentation_from_ahrs_state(vo_acs_time_ms)
+
+        plt.plot(ahrs_time_ms, ahrs_aa[:,0])
+        plt.plot(vo_acs_time_ms, vo_orientation[:,0])
+
+        plt.plot(ahrs_time_ms, ahrs_aa[:,2])
+        plt.plot(vo_acs_time_ms, vo_orientation[:,2])
+        plt.show()
+
+        import pdb; pdb.set_trace()
+
+    def _init_sub_dict(self, name, msg):
+        for key in msg.keys():
+            self.msg_dict[name][key] = []
+            
     def load_flight_log(self):
         print('building dict...')
         with open(self.json_file, "r") as file:
             for i, line in enumerate(file):
                 line_dict = json.loads(line)
                 if i > NUM_LOG_HEADER:
-                    if line_dict['name'] in self.msg_dict.keys():
-                        msg_pld = line_dict['payload']
-                        msg_name = line_dict['name']
-                        if len(self.msg_dict[msg_name].keys()) == 0:
-                            self._init_sub_dict(msg_name, msg_pld)
-                        self._append_msg_dict(msg_name, msg_pld)
+                    try:
+                        if line_dict['name'] in self.msg_dict.keys():
+                            msg_pld = line_dict['payload']
+                            msg_name = line_dict['name']
+                            if len(self.msg_dict[msg_name].keys()) == 0:
+                                self._init_sub_dict(msg_name, msg_pld)
+                            self._append_msg_dict(msg_name, msg_pld)
+                    except:
+                        import pdb; pdb.set_trace()
+                    # elif line_dict['name'] == 'CMD_RESULT':
+                    #     import pdb; pdb.set_trace()
         # Convert the values to array
         self._convert_dicts_to_array()
         self.filter_duplicated_msgs('GPS_STATE', 'sgps_time_ms')
@@ -94,10 +187,6 @@ class JsonApcLog:
 
     def get_vo_time(self):
         return self.msg_dict['VISION_VO_MEAS']['time_ms']
-
-    def _init_sub_dict(self, name, msg):
-        for key in msg.keys():
-            self.msg_dict[name][key] = []
 
     def _append_msg_dict(self, name, msg):
         for key in msg.keys():
@@ -140,9 +229,9 @@ class JsonApcLog:
             self.gps_offset_err.append(gps_time_err)
             self.gps_time_ms.append(gps_state['sgps_time_ms'][best_match_gps_idx])
 
-            # import pdb; pdb.set_trace()
             gps_ned_pose = gps_state['ned_pos'][best_match_gps_idx]
             gps_ned_vel = gps_state['ned_vel'][best_match_gps_idx]
+
             json_data['gps_ned_pose'] = gps_ned_pose.tolist()
             json_data['gps_ned_vel'] = gps_ned_vel.tolist()
         except:
@@ -184,6 +273,12 @@ class JsonApcLog:
         vo_meas_cap_timestamp = self.msg_dict['VISION_VO_MEAS']['tx2_time_ms']
         vo_meas_dsp_timestamp = self.msg_dict['VISION_VO_MEAS']['time_ms']
 
+        if start_capture_timestamp <= 0:
+            start_capture_timestamp = vo_meas_cap_timestamp[0]
+        
+        if end_capture_time <= 0:
+            end_capture_time = vo_meas_cap_timestamp[-1]
+    
         if end_capture_time > start_capture_timestamp:
             num_frames = int((end_capture_time - start_capture_timestamp) / expected_duration)
         else:
@@ -324,6 +419,8 @@ def _main(args):
         log = JsonApcLog(input_path)
 
     # import pdb; pdb.set_trace()
+    # log.check_orentation()
+    
     log.combine_into_jsons(start_capture_timestamp = start_timestamp, end_capture_time=end_timestamp, expected_duration = duration)
     log.dump_into_file(output_file)
     # if not os.path.exists(pickle_file):

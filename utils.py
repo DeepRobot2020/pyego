@@ -123,16 +123,48 @@ def correctCameraMatrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
     return K0
 
-def undistortImage(img, K_org, K_new, D, dim = (640, 480), balance=0.0):
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(K_org, D, np.eye(3), K_new, dim, cv2.CV_16SC2)
-    undistorted_img = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-    return undistorted_img
+
+def undistortImage(
+    img, 
+    K_org, K_new, D, 
+    R=None, P=None, 
+    dim = (640, 480), balance=0.0):
+    if P is None or R is None:
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+            K_org, D, np.eye(3), K_new, dim, cv2.CV_16SC2)
+    else:
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+            K_org, D, R, P, dim, cv2.CV_16SC2)
+        # import pdb; pdb.set_trace()
+    return cv2.remap(
+        img, map1, map2, 
+        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+
+def rectifyStereoImages(
+    cam0_img, cam1_img, 
+    K0, K1, 
+    D0, D1, 
+    R, T, img_size = (640, 480)):    
+    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(
+        K0, D0, K1, D1, img_size, R, T)
+
+    left_maps = cv2.initUndistortRectifyMap(
+        K0, D0, R1, P1, img_size, cv2.CV_16SC2)
+    right_maps = cv2.initUndistortRectifyMap(
+        K1, D1, R2, P2, img_size, cv2.CV_16SC2)
+
+    left_img_remap = cv2.remap(
+        cam0_img, left_maps[0], left_maps[1], cv2.INTER_LANCZOS4)
+    right_img_remap = cv2.remap(
+        cam1_img, right_maps[0], right_maps[1], cv2.INTER_LANCZOS4)
+    return left_img_remap, right_img_remap
 
 
 def fisheyeStereoRectify(K1, D1, K2, D2, R12, t12, zeroDisparity=True, imageSize=(640, 480)):
     flags = cv2.CALIB_ZERO_DISPARITY if zeroDisparity else 0
     R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(K1, D1, K2, D2, imageSize, R12, t12, flags)
     return R1, R2, P1, P2, Q
+
 
 
 def gaussian_blur(img, kernel=(5,5)):
@@ -429,10 +461,7 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
         resized_im = im.resize(target_size, Image.BICUBIC);
         resized_im.save(im_name)
 
-def get_kite_image_files(kite_base=None, video_format = '2x2', skip_images_factor = 0):
-    if video_format == '1x1':
-        x4_imgs = sync_navcam_collected_images(kite_base)
-        return x4_imgs 
+def get_kite_image_files(kite_base=None, skip_images_factor = 0):
     img_files = sorted(glob.glob(kite_base + '/*.jpg'))
     
     if skip_images_factor > 0:
@@ -545,16 +574,7 @@ def epiline(pt, F):
     return ax*nu, bx*nu, cx*nu
 
 
-def rectify_camera_pairs(cam0_img, cam1_img, K0, K1, D0, D1, R, T, img_size = (640, 480)):    
-    R1, R2, P1, P2, Q = cv2.fisheye.stereoRectify(K0, D0, K1, D1, img_size, R, T)
-    left_maps = cv2.initUndistortRectifyMap(K0, D0, R1, P1, img_size, cv2.CV_16SC2)
-    right_maps = cv2.initUndistortRectifyMap(K1, D1, R2, P2, img_size, cv2.CV_16SC2)
-    left_img_remap = cv2.remap(cam0_img, left_maps[0], left_maps[1], cv2.INTER_LANCZOS4)
-    right_img_remap = cv2.remap(cam1_img, right_maps[0], right_maps[1], cv2.INTER_LANCZOS4)
-    return left_img_remap, right_img_remap
-
-
-def skew_symmetric(T):
+def skewSymmetric(T):
     T = np.array(T)
     T = T.tolist()
     T = sum(T, [])
@@ -563,7 +583,7 @@ def skew_symmetric(T):
     return r
 
 def essential(R01, T01):
-    T01_cross = skew_symmetric(T01)
+    T01_cross = skewSymmetric(T01)
     E = np.dot(T01_cross, R01)
     return E
 
