@@ -1,7 +1,7 @@
 
 import glob, math
 import numpy as np
-import cv2
+import cv2, json
 from PIL import Image
 import os, io, libconf, copy
 from scipy.sparse import lil_matrix
@@ -87,7 +87,11 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
     corners = corners.reshape(len(corners), 1, 2)
 
     corners = kiteFishEyeUndistortPoints(corners, K, D, np.eye(3)) 
-
+    
+    # import pdb; pdb.set_trace()
+    corners = cv2.fisheye.undistortPoints(corners, K, D, np.eye(3)) 
+    
+    
     cn = np.array([np.mean(corners[:,0,0]), np.mean(corners[:,0,1])])
 
     aspect_ratio = K[0][0] / K [1][1]
@@ -116,13 +120,16 @@ def kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = (640, 480
     new_K = np.array([new_f[0], 0.0, new_c[0], 
              0.0, new_f[1], new_c[1], 
              0.0, 0.0, 1.0]).reshape(3, 3)
-
+    import pdb; pdb.set_trace()
     return new_K
 
 def correctCameraMatrix(K, D, dim = (640, 480), balance = 0.0):
     K0 = kiteEstimateNewCameraMatrixForUndistortRectify(K, D, image_shape = dim)
+    # K0, roi = cv2.fisheye.getOptimalNewCameraMatrix(K, D[0:4], dim, alpha=0)
     return K0
 
+# def correctOmniRadTanCameraMatrix(K, D, dim = (640, 480), balance = 0.0):
+    
 
 def undistortImage(
     img, 
@@ -135,10 +142,10 @@ def undistortImage(
     else:
         map1, map2 = cv2.fisheye.initUndistortRectifyMap(
             K_org, D, R, P, dim, cv2.CV_16SC2)
-        # import pdb; pdb.set_trace()
+
     return cv2.remap(
         img, map1, map2, 
-        interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
 
 def rectifyStereoImages(
     cam0_img, cam1_img, 
@@ -207,6 +214,20 @@ def apply_mask_image(img, mask):
     return masked_image
 
 
+def stack_images(imga, imgb):
+    """
+    Stack two color image ndarrays vertically
+    """
+    ha,wa = imga.shape[:2]
+    hb,wb = imgb.shape[:2]
+    max_width = np.max([wa, wb])
+    total_height = ha+hb
+    new_img = np.zeros(shape=(total_height, max_width, 3), dtype=np.uint8)
+
+    new_img[:ha,:wa]=imga
+    new_img[ha:ha+hb,:wb]=imgb
+    return new_img
+
 def concat_images(imga, imgb):
     """
     Combines two color image ndarrays side-by-side.
@@ -214,8 +235,10 @@ def concat_images(imga, imgb):
     ha,wa = imga.shape[:2]
     hb,wb = imgb.shape[:2]
     max_height = np.max([ha, hb])
+
     total_width = wa+wb
     new_img = np.zeros(shape=(max_height, total_width, 3), dtype=np.uint8)
+
     new_img[:ha,:wa]=imga
     new_img[:hb,wa:wa+wb]=imgb
     return new_img
@@ -224,6 +247,7 @@ def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
     descriptor = cv2.ORB_create()
     # import pdb; pdb.set_trace()
     # descriptor = cv2.xfeatures2d.BriefDescriptorExtractor_create(bytes=16)
+    dists = []
     for i in range(k0.shape[0]):
         if k1[i][0][0] < 1.0 or k1[i][0][1] < 1.0:
             continue
@@ -232,15 +256,21 @@ def compare_descriptor(k0, k1, img0, img1, descriptor_threshold = 100):
 
         kp1 = cv2.KeyPoint(float(k1[i][0][0]), float(k1[i][0][1]), 9.0)
         kp1, des1 = descriptor.compute(img1, [kp1])
+
         if des0 is None or des1 is None:
             k1[i][0][0] = -99.0
             k1[i][0][1] = -99.0
             continue
         # import pdb ; pdb.set_trace()
         des_distance = descriptor_hamming_distance(des0, des1)
+        dists.append(des_distance)
         if des_distance > descriptor_threshold:
             k1[i][0][0] = -99.0
             k1[i][0][1] = -99.0
+        # import pdb; pdb.set_trace()
+    return dists
+
+
     # import pdb; pdb.set_trace()
 def descriptor_hamming_distance(des1, des2):
     dist = 0
@@ -270,7 +300,7 @@ def concat_images_list(im_list):
     new_img = np.vstack(im_list)
     return new_img
 
-def invert_RT(R, T):
+def invertRt(R, T):
     ''' Invert Rotation (3x3) and Translation (3x1)
     '''
     R2 = np.array(R).T
@@ -293,7 +323,7 @@ def load_kite_config(cfg_file='nav_calib.cfg', num_cams=4):
         for i in range(num_cams):
             cam_calib = cam_config[i]
             cam_id = int(cam_calib['cam_id'])
-            mtx = np.array(cam_calib['camera_matrix']).reshape(3,3)
+            mtx = np.array(cam_calib['camera_matrix'])
             dist_coeff = np.array(cam_calib['dist_coeff'])
             rot = np.array(cam_calib['cam_rot']).reshape(3,3)
             trans = np.array(cam_calib['cam_trans']).reshape(3,1)
@@ -430,9 +460,7 @@ def read_kite_image(camera_images, num_cams=None, video_format='2x2',img_idx=0):
         imgs_x4 = kite_read_4x_images(camera_images[img_idx])
     else:
         assert(0)
-    ts = int(camera_images[img_idx].split('/')[-1].split('.')[0])
-    # import pdb; pdb.set_trace()
-    return imgs_x4, ts
+    return imgs_x4
 
 def get_kitti_image_files(kitti_base=None, data_seq='01', max_cam=2):
     seq_path =  os.path.join(kitti_base, 'sequences')
@@ -461,11 +489,9 @@ def resize_images(image_list,  output_path, target_size = (None, None)):
         resized_im = im.resize(target_size, Image.BICUBIC);
         resized_im.save(im_name)
 
-def get_kite_image_files(kite_base=None, skip_images_factor = 0):
-    img_files = sorted(glob.glob(kite_base + '/*.jpg'))
-    
-    if skip_images_factor > 0:
-        img_files = img_files[::skip_images_factor]
+def get_image_files(image_path=None):
+    img_files = sorted(glob.glob(image_path + '/*.jpg'))
+    img_files.sort(key=lambda f: int(filter(str.isdigit, f)))
     return img_files 
 
 def load_kitti_poses(cfg_file=None):
@@ -526,9 +552,15 @@ def shi_tomasi_corner_detection(img, quality_level = 0.01, min_distance = 8, roi
     feature_params = dict( maxCorners = kpts_num,
                         qualityLevel = quality_level,
                         minDistance = min_distance,
-                        blockSize = 7,
+                        # blockSize = 7,
                         mask = roi_mask)
-    return cv2.goodFeaturesToTrack(img, **feature_params)
+    
+    corners = cv2.goodFeaturesToTrack(img, **feature_params)
+
+    subpix_criteria = (cv2.TERM_CRITERIA_EPS+cv2.TERM_CRITERIA_MAX_ITER, 30, 0.1)
+
+    # cv2.cornerSubPix(img, corners, (3,3), (-1,-1), subpix_criteria)
+    return corners
 
 def fast_keypoints_detection(undistorted_img):
     fast = cv2.FastFeatureDetector_create(threshold=70, nonmaxSuppression=True)
@@ -681,6 +713,8 @@ def sparse_optflow(curr_im, target_im, flow_kpt0, win_size  = (18, 18)):
     flow_kpt2, st, err = cv2.calcOpticalFlowPyrLK(target_im, curr_im, flow_kpt1, None, **lk_params)
     return flow_kpt0, flow_kpt1, flow_kpt2 
 
+
+
 def construct_projection_mtx(K1, K2, R, t):
     left_T = np.eye(4)[:3]
     left_mtx = np.dot(K1, left_T)
@@ -690,8 +724,72 @@ def construct_projection_mtx(K1, K2, R, t):
     right_mtx = np.dot(K2, right_T)
     return left_mtx, right_mtx
 
+
+def generate3DPoints(points2D_L, points2D_R, Proj1, Proj2):
+    numPoints = points2D_L.shape[0]
+    d3dPoints = np.ones((numPoints,3))
+
+    for i in range(numPoints):
+        pLeft = points2D_L[i,:]
+        pRight = points2D_R[i,:]
+
+        X = np.zeros((4,4))
+        X[0,:] = pLeft[0] * Proj1[2,:] - Proj1[0,:]
+        X[1,:] = pLeft[1] * Proj1[2,:] - Proj1[1,:]
+        X[2,:] = pRight[0] * Proj2[2,:] - Proj2[0,:]
+        X[3,:] = pRight[1] * Proj2[2,:] - Proj2[1,:]
+
+        [u,s,v] = np.linalg.svd(X)
+        v = v.transpose()
+        vSmall = v[:,-1]
+        vSmall /= vSmall[-1]
+
+        d3dPoints[i, :] = vSmall[0:-1]
+
+    return d3dPoints
+
+
+def triangulationTest(left_K, right_K, rotation, translation, mean = 0.5, depth = 10, num_points = 100, err_ratio = 0.5):
+
+    scene_pts1 = np.random.normal(loc=[0.0, 0.0, 0.0], scale=[1, 1, 1], size=(num_points, 1, 3)).reshape(num_points, 3)
+    scene_pts1[:,2] = np.abs(scene_pts1[:,2]) + depth
+
+    scene_pts_4d = cv2.convertPointsToHomogeneous(scene_pts1).reshape(num_points,4)
+
+    left_p, right_p = construct_projection_mtx(left_K, right_K, rotation, translation.reshape(-1,1))
+    left_kpts = np.dot(left_p, scene_pts_4d.T).T
+    left_kpts = cv2.convertPointsFromHomogeneous(left_kpts).reshape(num_points,2)
+
+    right_kpts = np.dot(right_p, scene_pts_4d.T).T
+    right_kpts = cv2.convertPointsFromHomogeneous(right_kpts).reshape(num_points,2)
+
+    # left_kpts += np.random.normal(scale=[std, std], size=(num_points, 2))
+    right_kpts += np.random.normal(loc=[mean/2.0, mean/2.0], scale=[0.001, 0.001], size=(num_points, 2))
+
+
+    scene_pts2 = cv2.triangulatePoints(left_p, right_p, left_kpts.T, right_kpts.T).T
+    scene_pts2 = cv2.convertPointsFromHomogeneous(scene_pts2).reshape(-1, 3)
+
+    m1 = (left_kpts[:,0] > 0) & (left_kpts[:,0] < 640) & (left_kpts[:,1] > 0) & (left_kpts[:,1] < 480)
+    m2 = (right_kpts[:,0] > 0) & (right_kpts[:,0] < 640) & (right_kpts[:,1] > 0) & (right_kpts[:,1] < 480)
+
+    mask = m1 & m2
+
+    scene_pts1 = scene_pts1[mask == True]
+    scene_pts2 = scene_pts2[mask == True]
+    num_points = np.sum(mask)
+    
+    err = np.abs(scene_pts1[:,-1] - scene_pts2[:,-1]) / scene_pts1[:,-1]
+    err_samples = np.sum(err > err_ratio) + np.sum(scene_pts2[:,-1][err < err_ratio] < 0.5)
+
+    # import pdb; pdb.set_trace()
+    return scene_pts1, scene_pts2, err, err_samples / float(num_points)
+
 def triangulate_3d_points(left_kpts, right_kpts, left_K, right_K, rotation, translation):
-    left_p, right_p = construct_projection_mtx(left_K, right_K, rotation, translation)
+    if rotation.shape != (3, 3):
+        rotation = cv2.Rodrigues(rotation)[0]
+        
+    left_p, right_p = construct_projection_mtx(left_K, right_K, rotation, translation.reshape(-1,1))
 
     if right_kpts is None:
         return None
@@ -702,15 +800,19 @@ def triangulate_3d_points(left_kpts, right_kpts, left_K, right_K, rotation, tran
     except:
         print('cv2.triangulatePoints() failed')
         return None
-    # import pdb; pdb.set_trace()
+
     left_proj = np.dot(left_p, scene_pts.T).T
     left_proj = left_proj[:,0:2] / left_proj[:,2][:,np.newaxis]
     err_left = left_proj - left_kpts
+    err0 = norm(err_left, axis=1)
 
     right_proj = np.dot(right_p, scene_pts.T).T
     right_proj = right_proj[:,0:2] / right_proj[:,2][:,np.newaxis]
     err_right  = right_proj - right_kpts
+    err1 = norm(err_right, axis=1)
+
     points_cam_cur = scene_pts[:,0:3] / scene_pts[:,3][:,np.newaxis]
+    # generate3DPoints(left_kpts, right_kpts, left_p, right_p)
     return points_cam_cur, err_left, err_right
 
 def rotate_and_translate(points, rotation_vector, trans_vector):
@@ -752,7 +854,7 @@ def reprojection_error(points_3x1=None, observations_2x1=None, camera_matrix_3x3
 # Each motion has 6 unknows: 
 # R = [wx, wy, wz]^T
 # t = [tx, ty, tz]^T
-def global_bundle_adjustment_sparsity(cam_obs, n_cams=4, n_poses=1):
+def compute_bundle_adjustment_sparsity(cam_obs, n_cams=4, n_poses=1):
     n_obs_013 = cam_obs[:,0]
     n_obs_01  = cam_obs[:,1]
 
@@ -912,7 +1014,7 @@ def transform_egomotion_from_frame_a_to_b(egomotion_rotation_a, egomotion_transl
     return egomotion_rotation_b, egomotion_translation_b
     
 
-def transform_velocity_from_frame_a_to_b(ang_vel_a, lin_vel_a, rotation_a_to_b, translation_a_to_b):
+def transformVelocityFromAToB(ang_vel_a, lin_vel_a, rotation_a_to_b, translation_a_to_b):
     '''Transform velocity from frame a to b
     '''
     translation_a_to_b_cross = np.array([0,                     -translation_a_to_b[2], translation_a_to_b[1], 
@@ -922,6 +1024,7 @@ def transform_velocity_from_frame_a_to_b(ang_vel_a, lin_vel_a, rotation_a_to_b, 
 
     lin_vel_b = rotation_a_to_b.dot(lin_vel_a.reshape(3, 1)) + t_cross_R.dot(ang_vel_a.reshape(3, 1))
     ang_vel_b = rotation_a_to_b.dot(ang_vel_a.reshape(3, 1))
+    # import pdb; pdb.set_trace()
     return ang_vel_b, lin_vel_b
     
 
@@ -991,52 +1094,21 @@ def eulerAnglesToRotationMatrix(theta) :
     R = np.dot(R_z, np.dot( R_y, R_x ))
     return R
 
-# ref
-# http://danceswithcode.net/engineeringnotes/rotations_in_3d/rotations_in_3d_part1.html
-def eular_angle_to_rotation_matrix(eular):
-    u = eular[0]; v = eular[1]; w = eular[2];
-    cu = math.cos(u); su = math.sin(u);
-    cv = math.cos(v); sv = math.sin(v);
-    cw = math.cos(w); sw = math.sin(w);
+def Q2R(q) :
+    q0 = Quaternion(array=np.array([q[0], q[1], q[2], q[3]]))
+    return q0.rotation_matrix
+    
 
-
-    m00 = cu * cw
-    m01 = su * sv * cw - cu * sw
-    m02 = su * sw + cu * sv * cw;
-
-    m10 = cv * sw
-    m11 = cu * cw + su * sv * sw
-    m12 = cu * sv * sw - su * cw 
-
-    m20 = -sv
-    m21 = su * cv 
-    m22 = cu * cv 
-    return np.array([m00, m01, m02, m10, m11, m12, m20, m21, m22]).reshape(3,3)
-
-def orientation_correction(est_ned_vel, gps_ned_vel, est_rot):
-    fc_eular = rotationMatrixToEulerAngles(est_rot)
-
-    u =  np.linspace(-math.pi/16.0, math.pi/16.0, 1e2) + np.array(fc_eular[0])
-    v =  np.linspace(-math.pi/16.0, math.pi/16.0, 1e2) + np.array(fc_eular[1])
-    w =  np.linspace(-math.pi/16.0, math.pi/16.0, 1e2) + np.array(fc_eular[2])
-
-    min_err = 1e10
-    min_eular = None
-    for ui in u:
-        for vi in v:
-            for wi in w:
-                eulari = [ui, vi, wi]
-                rot_3x3 = eular_angle_to_rotation_matrix(eulari)
-                est_gps_ned_vel = rot_3x3.dot(est_ned_vel)
-                err = norm(np.absolute(gps_ned_vel - est_gps_ned_vel))
-                if err < min_err:
-                    min_err = err
-                    min_eular = eulari
-                    print(est_gps_ned_vel, gps_ned_vel)
-                    if err < 0.01:
-                        break
-    import pdb; pdb.set_trace()
-
+def load_kitti_gt(annotations, frame_id):  #specialized for KITTI odometry dataset
+    ss = annotations[frame_id-1].strip().split()
+    x_prev = float(ss[3])
+    y_prev = float(ss[7])
+    z_prev = float(ss[11])
+    ss = annotations[frame_id].strip().split()
+    x = float(ss[3])
+    y = float(ss[7])
+    z = float(ss[11])
+    return  x, y, z
 
 def get_translation_from_acsmeta(msg):
     return np.array([msg[ACS_POSITION_X], msg[ACS_POSITION_Y], msg[ACS_POSITION_Z]], dtype=np.float32).reshape(3,1)
@@ -1065,10 +1137,9 @@ def covarinace_svd(jac):
     s = s[s > threshold]
     VT = VT[:s.size]
     pcov = np.dot(VT.T / s**2, VT)
-    # import pdb; pdb.set_trace()
     return pcov[0:6, 0:6]
 
-def covariance_mvg_A6_4(jac, mask): 
+def covariance_mvg_A6_4(jac): 
     # Estimate the covariance of the motion paramters by MVG Algorithm A6.4.
     hessian = jac.T.dot(jac)
     # with shape (6 + num_points * 3) x (6 + num_points)
@@ -1081,11 +1152,10 @@ def covariance_mvg_A6_4(jac, mask):
 
     sum_i = np.zeros_like(U)
     for i in range(n_points):
-        if mask[i]:
-            W_i = W[:,i * 3 : (i + 1) * 3]
-            V_i = V[i * 3 : i * 3 + 3,i * 3 : i * 3 + 3]
-            V_i_inv = np.linalg.inv(V_i)
-            sum_i += (W_i.dot(V_i_inv)).dot(W_i.T)
+        W_i = W[:,i * 3 : (i + 1) * 3]
+        V_i = V[i * 3 : i * 3 + 3,i * 3 : i * 3 + 3]
+        V_i_inv = np.linalg.inv(V_i)
+        sum_i += (W_i.dot(V_i_inv)).dot(W_i.T)
     S = U - sum_i
     S_inv = np.linalg.inv(S)
     return S_inv
@@ -1100,4 +1170,12 @@ def visualize_sparsity_jacobian(jac):
     ax2.spy(jac.T.dot(jac), markersize=5)
     show()
 
-    
+def load_json_to_list(json_file):
+    js_list = []
+    with open(json_file, 'r') as f:
+        content = f.readlines()
+        for line in content:
+            js_list.append(json.loads(line))
+    return js_list
+
+

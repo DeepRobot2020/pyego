@@ -1,50 +1,29 @@
-
-import numpy as np
 import cv2
-
 import glob, pdb, math, json
 import warnings
 import os, io, libconf, copy
-
 import csv
-
-from PIL import Image
-
-from numpy.linalg import inv, norm
-from scipy.optimize import least_squares
+import pandas as pd
+import numpy as np
+from scipy.optimize import least_squares 
 
 import time
-from datetime import datetime
 import argparse
-import matplotlib.pyplot as plt
-from ImageImuSyncer import ImageImuSyncer
-from apc import ImageAPCSyncer
+from cameras import navcam
+from acc_flt import AccFilter
 
 from utils import *
 from cfg import *
-import shutil
-from datetime import datetime
-from digits_detect import DigitsDetect
+from kiteJsonLog import kiteJsonLog
 
-from matplotlib.pyplot import figure, show
+from datetime import datetime
+import matplotlib.pyplot as plt
 
 np.set_printoptions(suppress=True)
 
 parser = argparse.ArgumentParser(
     description='Compute camera relative pose on input stereo or quad images')
 
-parser.add_argument(
-    '-dataset',
-    '--dataset_type',
-    help='dataset type: (Kite, Kitti)',
-    default=DATASET)
-
-parser.add_argument(
-    '-seq',
-    '--seq_num',
-    type=int,
-    help='sequence number (only fir Kitti)',
-    default=2)
 
 parser.add_argument(
     '-img',
@@ -53,43 +32,52 @@ parser.add_argument(
     default=INPUT_IMAGE_PATH)
 
 parser.add_argument(
+    '-undist',
+    '--undistortion_required',
+    help='Whether undistortion required or not',
+    default=True)
+
+parser.add_argument(
     '-calib',
     '--calib_path',
     help='path to directory of calibriation file (Kite)',
     default=INPUT_CALIB_PATH)
 
-parser.add_argument(
-    '-out',
-    '--output_path',
-    help='path to output test images',
-    default='output')
-
-parser.add_argument(
-    '-json',
-    '--enable_json',
-    type=bool,
-    help='output data to json format',
-    default=False)
 
 parser.add_argument(
     '-feats',
     '--num_features',
     type=int,
     help='Max number of features',
-    default=MAX_NUM_KEYPOINTS)
+    default= MAX_NUM_KEYPOINTS)
 
 parser.add_argument(
     '-num_cam',
     '--num_cameras',
     type=int,
     help='Max number of cameras used for VO',
-    default=2)
+    default=4)
 
 parser.add_argument(
-    '-json_pose',
-    '--external_json_pose',
-    help='Debug a extimated pose',
-    default=KITE_OUTPUT_POSE_PATH)
+    '-json_init',
+    '--json_init_path',
+    help='Json file including the initial egomotion',
+    type=str,
+    default=VO_INIT_JSON)
+
+parser.add_argument(
+    '-linear_seed',
+    '--linear_seed_enabled',
+    help='Whether to use the linear motion as seed',
+    type=int,
+    default=0)
+
+parser.add_argument(
+    '-output_path',
+    '--output_results_path',
+    help='Whether to write the motion log',
+    type=str,
+    default=None)
 
 parser.add_argument(
     '-json_feature_path',
@@ -98,610 +86,80 @@ parser.add_argument(
     type=str,
     default=None)
 
-class KTPinholeCamera:
-    def __init__(self, width, height, fx, fy, cx, cy, k1=0.0, k2=0.0, p1=0.0, p2=0.0, k3=0.0):
-        self.width = width
-        self.height = height
-        self.fx = fx
-        self.fy = fy
-        self.cx = cx
-        self.cy = cy
-        self.distortion = (abs(k1) > 0.0000001)
-        self.d = [k1, k2, p1, p2, k3]
-
-kt_cam = KTPinholeCamera(1241.0, 376.0, 718.8560, 718.8560, 607.1928, 185.2157)
-
-
-class navcam:
-    def __init__(self, 
-        index, stereo_pair_idx, 
-        intrinsic_mtx,  intrinsic_dist,  
-        extrinsic_rot, extrinsic_trans, 
-        num_features=64,
-        stereo_rectify_P = None,
-        stereo_rectify_R = None):
-
-        self.calib_d   = intrinsic_dist[0:4].astype(np.float32)
-        self.calib_K0  = intrinsic_mtx.astype(np.float32)
-        self.calib_R   = extrinsic_rot.astype(np.float32)
-        self.calib_t   = extrinsic_trans.astype(np.float32)
-
-        # stereo_rectify_P: Stereo rectified projection matrix 
-        # stereo_rectify_R: Stereo rectified rotation matrix 
-        self.stereo_rectify_P = stereo_rectify_P
-        self.stereo_rectify_R = stereo_rectify_R
-
-        if DATASET == 'kitti': 
-            # focal lenght and princial point of kitti stereo cameras
-            self.focal      = kt_cam.fx
-            self.pp         = (kt_cam.cx, kt_cam.cy) 
-            self.calib_K    = intrinsic_mtx
-
-        else: #DATASET == 'kite':  # focal lenght and princial point of kite navcam
-            if self.stereo_rectify_P[index] is None:
-                self.calib_K   = correctCameraMatrix(intrinsic_mtx, self.calib_d)
-                self.focal     = (self.calib_K[0,0] + self.calib_K[1,1]) / 2.0
-                self.pp         = (self.calib_K[:2,2][0], self.calib_K[:2,2][1])  
-            else:
-                self.calib_K = self.stereo_rectify_P[index][0:3, 0:3]
-                self.focal = (self.calib_K[0,0] + self.calib_K[1,1]) / 2.0
-                self.pp = (self.calib_K[:2,2][0], self.calib_K[:2,2][1])  
-                self.calib_R = np.identity(3)
-                if index % 2 == 0:
-                    tvec = -self.stereo_rectify_P[stereo_pair_idx][:,3]
-                else:
-                    tvec = self.stereo_rectify_P[index][:,3]
-
-                self.calib_t = (inv(self.calib_K).dot(tvec)).reshape(3,1)
-
-        self.calib_R2  = cv2.Rodrigues(self.calib_R)[0].astype(np.float32)
-
-        
-        self.num_features = num_features
-        self.flow_kpt0 = None
-        self.flow_kpt1 = None
-        self.flow_kpt2 = None
-        self.flow_kpt3 = None
-        self.flow_kpt4 = None
-        self.stereo_pair_cam = None
-        self.stereo_pair_idx = stereo_pair_idx 
-
-        self.stereo_R = None # camera pose rotation in 
-        self.stereo_t = None 
-        self.mono_cur_R = None
-        self.mono_cur_t = None
-        self.ego_R = None
-        self.ego_t = None
-        self.prev_scale = 1.0
-        # keypoints which have both intra and inter matching
-        self.flow_intra_inter0 = None  # original keypoints
-        self.flow_intra_inter1 = None  # intra match
-        self.flow_intra_inter3 = None  # inter match
-
-        self.flow_intra0  = None # original keypoints
-        self.flow_intra1  = None # intra match
-
-        self.flow_inter0 = None # original keypoints
-        self.flow_inter3 = None # inter match
-
-        self.intra0 = None # original keypoints
-        self.intra1 = None # inter match
-
-        self.curr_img  = None
-        self.curr_stereo_img  = None
-        self.prev_img  = None
-        self.index   = index
-
-        self.img_idx = None
-
-        # K0 = self.calib_K
-        # K1 = self.stereo_pair_cam.calib_K
-        # rot = self.calib_R
-        # trans = self.calib_t
-        # self.F = fundamental_matrix(rot, trans, K0, K1) 
-
-        self.F = None
-        self.proj_mtx = None
-
-    def undistortImage(self, img_dist):
-        return undistortImage(
-            img_dist, 
-            self.calib_K0, 
-            self.calib_K,
-            self.calib_d,
-            self.stereo_rectify_R[self.index],
-            self.stereo_rectify_P[self.index])
-
-
-    def five_point_algo(self):
-        if self.intra0.shape[0] < 5:
-            return None, None, None
-        try:
-            E, e_mask = cv2.findEssentialMat(self.intra0, self.intra1, self.calib_K, method=cv2.RANSAC, prob=0.9, threshold=0.1)
-            nin, R, t, mask, pts = cv2.recoverPose(E, self.intra0, self.intra1, self.calib_K, mask = e_mask, distanceThresh=1000.0)
-        except:
-            return None, None, None
-        return R, t, mask
-
-    def set_stereo_pair(self, right_cam):
-        '''Set the stereo pair of current camera  '''
-        self.stereo_pair_cam = right_cam
-
-    def fun(self, x0, cam_obs, y_meas):
-        n_kpts_013, n_kpts_01 = cam_obs
-                
-        rot_vecs   = x0[0:3]
-        trans_vecs = x0[3:6]
-        points_013 = x0[6: 6 + 3 * n_kpts_013].reshape(-1, 3)
-
-        flow013_0  = y_meas[0: 1 * n_kpts_013]
-        flow013_1  = y_meas[1 * n_kpts_013 : 2 * n_kpts_013]
-        flow013_3  = y_meas[2 * n_kpts_013 : 3 * n_kpts_013]
-
-        flow0_err = reprojection_error(points_013, flow013_0, self.calib_K)
-        flow1_err = reprojection_error(points_013, flow013_1, self.calib_K, rot_vecs, trans_vecs)
-        flow3_err = reprojection_error(points_013, flow013_3, self.stereo_pair_cam.calib_K, self.calib_R2, self.calib_t)
-    
-        errs = flow1_err
-        errs013_03 = np.vstack((flow0_err, flow3_err))
-        
-        flow01_err0 = None
-        flow01_err1 = None
-
-        if n_kpts_01 > 0:
-            points_01  = x0[6 + 3 * n_kpts_013 : 6 + 3 * n_kpts_013 + 3 * n_kpts_01].reshape(-1, 3)
-            flow01_0  = y_meas[3 * n_kpts_013  : 3 * n_kpts_013 + n_kpts_01]
-            flow01_1  = y_meas[3 * n_kpts_013 + n_kpts_01: 3 * n_kpts_013 + 2*n_kpts_01]
-
-            flow0_err = reprojection_error(points_01, flow01_0, self.calib_K)
-            flow1_err = reprojection_error(points_01, flow01_1, self.calib_K, rot_vecs, trans_vecs)
-
-            errs = np.vstack((errs, flow1_err))   
-            errs013_03 = np.vstack((errs013_03, flow0_err))
-
-        errs = np.vstack((errs, errs013_03))
-        return errs.ravel()
-
-    def reprojection_err(self, x0, cam_obs, y_meas):
-        n_kpts_013, n_kpts_01 = cam_obs
-        reprojection_errs = []     
-        rot_vecs   = x0[0:3]
-        trans_vecs = x0[3:6]
-        points_013 = x0[6: 6 + 3 * n_kpts_013].reshape(-1, 3)
-        flow013_0  = y_meas[0 : n_kpts_013]
-        flow013_1  = y_meas[n_kpts_013 : 2 * n_kpts_013]
-        flow013_3  = y_meas[2 * n_kpts_013 : 3 * n_kpts_013]
-
-        flow0_err = reprojection_error(points_013, flow013_0, self.calib_K)
-        flow1_err = reprojection_error(points_013, flow013_1, self.calib_K, rot_vecs, trans_vecs)
-        flow3_err = reprojection_error(points_013, flow013_3, self.stereo_pair_cam.calib_K, self.calib_R2, self.calib_t)
-    
-        reprojection_errs.append(flow0_err)
-        reprojection_errs.append(flow1_err)
-        reprojection_errs.append(flow3_err)
-
-        if n_kpts_01 > 0:
-            points_01  = x0[6 + 3 * n_kpts_013 : 6 + 3 * n_kpts_013 + 3 * n_kpts_01].reshape(-1, 3)
-            flow01_0  = y_meas[3 * n_kpts_013  : 3 * n_kpts_013 + n_kpts_01]
-            flow01_1  = y_meas[3 * n_kpts_013 + n_kpts_01: 3 * n_kpts_013 + 2*n_kpts_01]
-            flow0_err = reprojection_error(points_01, flow01_0, self.calib_K)
-            flow1_err = reprojection_error(points_01, flow01_1, self.calib_K, rot_vecs, trans_vecs)
-            reprojection_errs.append(flow0_err)
-            reprojection_errs.append(flow1_err)
-        return reprojection_errs
-
-
-    def update_camera_pose_egomotion(self, R, t):
-        self.ego_R = R
-        self.ego_t = t
-        # 
-        self.prev_scale = norm(t) if norm(t) > 0.01 else self.prev_scale
-        if self.img_idx == 1:
-            self.stereo_R = R
-            self.stereo_t = t
-        else:
-            self.stereo_t = self.stereo_t + self.stereo_R.dot(t) 
-            try:
-                self.stereo_R = R.dot(self.stereo_R)
-            except:
-                import pdb; pdb.set_trace()
-        return self.stereo_R, self.stereo_t
-
-    def get_egomotion(self):
-        return self.ego_R, self.ego_t
-
-    def get_stereo_camera_pose(self):
-        return self.stereo_R, self.stereo_t
-
-    def projection_mtx(self):
-        if self.proj_mtx is not None:
-            return self.proj_mtx
-        T = np.zeros([3,4])
-        if self.index == 0:
-            T[0:3,0:3] = np.identity(3)
-        else:
-            T[0:3,0:3] = self.calib_R
-            T[:,3][:3] = self.calib_t.ravel()
-        self.proj_mtx = np.dot(self.calib_K, T)
-        return self.proj_mtx
-        
-    def update_image(self, imgs_x4):
-        self.prev_img = copy.deepcopy(self.curr_img)        
-        self.curr_img = copy.deepcopy(imgs_x4[self.index])
-        self.curr_stereo_img = copy.deepcopy(imgs_x4[self.stereo_pair_idx])
-        if self.img_idx is None:
-            self.img_idx = 0
-        else:
-            self.img_idx += 1
-
-    def keypoint_detection(self):
-        if self.curr_img is None:
-            print('Warning: curr_img is None')
-            return
-        roi_mask = None
-        if DATASET == 'kite':
-            roi_mask = region_of_interest_mask(self.curr_img.shape, KITE_MASK_VERTICES[self.index])
-
-        self.flow_kpt0 = shi_tomasi_corner_detection(self.curr_img, 
-                                                    quality_level = SHI_TOMASI_QUALITY_LEVEL,
-                                                    min_distance = SHI_TOMASI_MIN_DISTANCE, 
-                                                    roi_mask = roi_mask, 
-                                                    kpts_num = self.num_features)
-    def front_end_sift_detection_matching(self):
-        if self.curr_img is None:
-            print('Warning: curr_img is None')
-            return
-        roi_mask0 = None
-        roi_mask1 = None
-        if DATASET == 'kite':
-            roi_mask0 = region_of_interest_mask(self.curr_img.shape, 
-                                        KITE_MASK_VERTICES[self.index], 
-                                        filler = 1)
-
-            roi_mask1 = region_of_interest_mask(self.curr_img.shape, 
-                                KITE_MASK_VERTICES[self.stereo_pair_cam.index], 
-                                filler = 1)
-
-        img0 = self.curr_img
-        img1 = self.prev_img
-        img3 = self.curr_stereo_img
-
-        sift = cv2.xfeatures2d.SIFT_create()
-        kp0, des0 = sift.detectAndCompute(img0, roi_mask0)
-        kp1, des1 = sift.detectAndCompute(img1, roi_mask0)
-        kp3, des3 = sift.detectAndCompute(img3, roi_mask1)
-
-        FLANN_INDEX_KDTREE = 1
-        index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-        search_params = dict(checks = 50)
-        flann = cv2.FlannBasedMatcher(index_params, search_params)
-        matches = flann.knnMatch(des1, des2,k=2)
-        good = []
-        for m,n in matches:
-            if m.distance < 0.7*n.distance:
-                good.append(m)
-        if len(good)>MIN_MATCH_COUNT:
-            src_pts = np.float32([ kp1[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
-            dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
-            M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
-            matchesMask = mask.ravel().tolist()
-        else:
-            print( "Not enough matches are found - {}/{}".format(len(good), MIN_MATCH_COUNT))
-            matchesMask = None
-                    
-
-    def intra_sparse_optflow(self):
-        if self.prev_img is not None:
-            k0, k1, k2 = sparse_optflow(self.curr_img, self.prev_img, self.flow_kpt0, win_size=INTRA_OPTFLOW_WIN_SIZE)
-            self.flow_kpt1 = k1
-            self.flow_kpt2 = k2
-            # import pdb; pdb.set_trace()
-            compare_descriptor(k0, k1, self.curr_img, self.prev_img, descriptor_threshold=INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD)
-            self.filter_intra_keypoints()
-            # import pdb; pdb.set_trace()
-
-    def inter_sparse_optflow(self):
-        k0, k3, k4 = sparse_optflow(self.curr_img, self.curr_stereo_img, self.flow_kpt0, win_size=INTER_OPTFLOW_WIN_SIZE)
-        self.flow_kpt3 = k3
-        self.flow_kpt4 = k4
-        # import pdb; pdb.set_trace()
-        compare_descriptor(k0, k3, self.curr_img, self.curr_stereo_img, descriptor_threshold=INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD)
-        self.filter_inter_keypoints()
-
-    def filter_intra_keypoints(self):
-        img = None
-        if self.prev_img is not None:
-            for ct, (pt1, pt2, pt3) in enumerate(zip(self.flow_kpt0, self.flow_kpt1, self.flow_kpt2)):
-                x1, y1 = (pt1[0][0], pt1[0][1])
-                x2, y2 = (pt2[0][0], pt2[0][1])
-                x3, y3 = (pt3[0][0], pt3[0][1])
-                xe = abs(x3 - x1)
-                ye = abs(y3 - y1)
-                if x2 < 0.0 or y2 < 0.0:
-                    self.flow_kpt1[ct][0][0] = -10.0
-                    self.flow_kpt1[ct][0][1] = -10.0
-                    continue
-                if xe > INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD or ye > INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD:
-                    self.flow_kpt1[ct][0][0] = -20.0
-                    self.flow_kpt1[ct][0][1] = -20.0
-                    continue  
-        # import pdb; pdb.set_trace()
-    def filter_inter_keypoints(self):
-        img = None
-        if self.prev_img is not None:
-            if self.F is None:
-                K0 = self.calib_K
-                K1 = self.stereo_pair_cam.calib_K
-                rot = self.calib_R
-                trans = self.calib_t
-                self.F = fundamental_matrix(rot, trans, K0, K1)
-
-            ep_err = epi_constraint(self.flow_kpt0, self.flow_kpt3, self.F)
-            # import pdb; pdb.set_trace()
-            for ct, (err, pt1, pt3, pt4) in enumerate(zip(ep_err, self.flow_kpt0, self.flow_kpt3, self.flow_kpt4)):
-                x1, y1 = (pt1[0][0], pt1[0][1])
-                x3, y3 = (pt3[0][0], pt3[0][1])
-                x4, y4 = (pt4[0][0], pt4[0][1])
-                xe = abs(x4 - x1)
-                ye = abs(y4 - y1)
-                if x3 < 0.0 or y3 < 0.0:
-                    self.flow_kpt3[ct][0][0] = -10.0
-                    self.flow_kpt3[ct][0][1] = -10.0
-                    continue
-                if xe > INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD or ye > INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD:
-                    self.flow_kpt3[ct][0][0] = -20.0
-                    self.flow_kpt3[ct][0][1] = -20.0
-                    continue  
-                if abs(err) > INTER_OPT_FLOW_EPILINE_ERROR_THRESHOLD:
-                    self.flow_kpt3[ct][0][0] = -30.0
-                    self.flow_kpt3[ct][0][1] = -30.0
-                    continue
-            # import pdb; pdb.set_trace()
-    def debug_inter_keypoints(self, out_dir='/tmp'):
-        img = None
-        if self.prev_img is not None:
-            flow0 = self.flow_intra_inter0
-            flow3 = self.flow_intra_inter3    
-
-            if flow0 is None or flow3 is None:
-                return 
-            if len(flow0) == 0 or len(flow3) == 0:
-                return 
-            try:
-                points013, _, _ = triangulate_3d_points(flow0, flow3, self.calib_K, self.stereo_pair_cam.calib_K, self.calib_R, self.calib_t)
-            except:
-                import pdb; pdb.set_trace()
-            img1 = cv2.cvtColor(self.curr_img, cv2.COLOR_GRAY2BGR)
-            img2 = cv2.cvtColor(self.curr_stereo_img, cv2.COLOR_GRAY2BGR)
-
-            # import pdb; pdb.set_trace()
-            for pt1, pt3, wp in zip(self.flow_intra_inter0, self.flow_intra_inter3, points013):
-                x1, y1 = (int(pt1[0]), int(pt1[1]))
-                x3, y3 = (int(pt3[0]), int(pt3[1]))
-                color = tuple(np.random.randint(0,255,3).tolist())
-                depth = "{:.1f}".format(wp[2])
-                cv2.putText(img1, depth, (x1 + 10, y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, lineType=cv2.LINE_AA) 
-                cv2.putText(img2, depth, (x3 + 10, y3 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, lineType=cv2.LINE_AA) 
-                cv2.circle(img1,(x1, y1), 6, color,2)
-                cv2.circle(img2,(x3, y3), 6, color,2)
-
-            img = concat_images(img1, img2)
-            if img is not None:
-                out_img_name = os.path.join(out_dir, 'cam_' + str(self.index) + '_inter_' + str(self.img_idx)+'.jpg')
-                cv2.imwrite(out_img_name, img)
-
-    def debug_intra_keypoints(self, out_dir='/tmp'):
-        img = None
-        if self.prev_img is not None:
-            img1 = cv2.cvtColor(self.curr_img, cv2.COLOR_GRAY2BGR)
-            img2 = cv2.cvtColor(self.prev_img, cv2.COLOR_GRAY2BGR)
-            for pt1, pt2 in zip(self.flow_intra_inter0, self.flow_intra_inter1):
-                x1, y1 = (int(pt1[0]), int(pt1[1]))
-                x3, y3 = (int(pt2[0]), int(pt2[1]))
-                color = tuple(np.random.randint(0,255,3).tolist())
-                cv2.circle(img1,(x1, y1), 6, color,2)
-                cv2.circle(img2,(x3, y3), 6, color,2)
-
-            for pt1, pt2 in zip(self.flow_intra0, self.flow_intra1):
-                x1, y1 = (int(pt1[0]), int(pt1[1]))
-                x3, y3 = (int(pt2[0]), int(pt2[1]))
-                color = tuple(np.random.randint(0,255,3).tolist())
-                cv2.circle(img1,(x1, y1), 6, color,2)
-                cv2.circle(img2,(x3, y3), 6, color,2)
-
-            img = concat_images(img1, img2)
-            if img is not None:
-                out_img_name = os.path.join(out_dir, 'cam_' + str(self.index) + '_intra_' + str(self.img_idx)+'.jpg')
-                cv2.imwrite(out_img_name, img)
-
-
-    def outliers_removal(self, debug=False, out_dir='/home/jzhang/Pictures/tmp/', max_inter_pts = 100, max_depth = 50):
-        if self.prev_img is not None:            
-            flow_intra_inter0 = []
-            flow_intra_inter1 = []
-            flow_intra_inter3 = []
-
-            flow_intra0 = []
-            flow_intra1 = []
-
-            flow_inter0 = []
-            flow_inter3 = []
-            intra0 = []
-            intra1 = []
-            self.flow_intra_inter0 = None
-            self.flow_intra_inter1 = None
-            self.flow_intra_inter3 = None
-
-            self.flow_intra0 = None
-            self.flow_intra1 = None
-
-            self.flow_inter0 = None
-            self.flow_inter3 = None
-
-            self.intra0 = None
-            self.intra1 = None
-            
-            K0 = self.calib_K
-            K1 = self.stereo_pair_cam.calib_K
-            rot_01 = self.calib_R
-            trans_01 = self.calib_t
-            
-            points013, terr0, terr1 = triangulate_3d_points(np.array(self.flow_kpt0).reshape(-1,2), 
-                                                            np.array(self.flow_kpt3).reshape(-1,2), 
-                                                            K0, 
-                                                            K1, 
-                                                            rot_01, 
-                                                            trans_01)
-
-            dist01 = np.sum(np.abs(self.flow_kpt0 - self.flow_kpt1)**2,axis=-1)**(1./2)
-            dist03 = np.sum(np.abs(self.flow_kpt0 - self.flow_kpt3)**2,axis=-1)**(1./2)
-
-            cfg_dist_03 = 0.25
-            cfg_dist_01 = 0.05
-
-            num_flow_013 = 0
-            for kp0, kp1, kp3, d01, d03 in zip(self.flow_kpt0, self.flow_kpt1, self.flow_kpt3, dist01, dist03):
-                x0, y0 = kp0[0][0], kp0[0][1]
-                x1, y1 = kp1[0][0], kp1[0][1]
-                x3, y3 = kp3[0][0], kp3[0][1]
-
-                if d03 > cfg_dist_03 and d01 > cfg_dist_01 and x1 > 1.0 and x3 > 1.0 and num_flow_013 < max_inter_pts: # intra and inter
-                    wp, _, _ = triangulate_3d_points(np.array([x0, y0]).reshape(-1,2), 
-                                                     np.array([x3, y3]).reshape(-1,2), 
-                                                     K0, 
-                                                     K1, 
-                                                     rot_01, 
-                                                     trans_01)
-                    
-                    # import pdb ; pdb.set_trace()
-                    world_pt_depth = wp.reshape(-1,)[2]
-
-                    if world_pt_depth <= 0.1 or world_pt_depth > max_depth:
-                        # print('noisy point', x0,y0, x3,y3, world_pt_depth)
-                        continue
-                    num_flow_013 += 1
-                    flow_intra_inter0.append(np.array([x0, y0]))
-                    flow_intra_inter1.append(np.array([x1, y1]))
-                    flow_intra_inter3.append(np.array([x3, y3]))
-                    intra0.append(np.array([x0, y0]))
-                    intra1.append(np.array([x1, y1]))
-                    # n_res += 1
-                elif d03 > cfg_dist_03 and d01 > cfg_dist_01 and x1 > 1.0 and x3 < 1.0: # intra only
-                    flow_intra0.append(np.array([x0, y0]))
-                    flow_intra1.append(np.array([x1, y1]))
-                    intra0.append(np.array([x0, y0]))
-                    intra1.append(np.array([x1, y1]))
-                elif d03 > cfg_dist_03 and d01 > cfg_dist_01 and x1 < 0.0 and x3 > 0.0: # inter only
-                    flow_inter0.append(np.array([x0, y0]))
-                    flow_inter3.append(np.array([x3, y3]))
-
-            self.flow_intra_inter0 = np.array(flow_intra_inter0, dtype=np.float64)
-            self.flow_intra_inter1 = np.array(flow_intra_inter1, dtype=np.float64)
-            self.flow_intra_inter3 = np.array(flow_intra_inter3, dtype=np.float64)
-
-            self.flow_intra0 = np.array(flow_intra0, dtype=np.float64)
-            self.flow_intra1 = np.array(flow_intra1, dtype=np.float64)
-
-            self.flow_inter0 = np.array(flow_inter0, dtype=np.float64)
-            self.flow_inter3 = np.array(flow_inter3, dtype=np.float64)
-
-            self.intra0 = np.array(intra0, dtype=np.float64)
-            self.intra1 = np.array(intra1, dtype=np.float64)
-
-            # import pdb ; pdb.set_trace()
-            if debug:    
-                self.debug_inter_keypoints(out_dir)
-                self.debug_intra_keypoints(out_dir)
-                print('img', self.img_idx, 'cam_'+ str(self.index ), 'intra_inter:' + str(len(self.flow_intra_inter0)), 'intra:' + str(len(self.flow_intra0)), 'inter:'+str(len(self.flow_inter0)))
-
-
-    def filter_keypoints_extra(self, rot, trans, debug=False, out_dir='/home/jzhang/Pictures/tmp/', max_depth = 50):
-        ''' Further filter out the bad keypoints by checking with initial motions
-        '''
-        if self.prev_img is not None:            
-            flow_intra_inter0 = self.flow_intra_inter0
-            flow_intra_inter3 = self.flow_intra_inter3
-
-            flow_intra0_new = []
-            flow_intra1_new = [] 
-
-            K0 = self.calib_K
-            K1 = self.stereo_pair_cam.calib_K
-            rot_01  = self.calib_R
-            trans_01 = self.calib_t
-
-            try:
-                points013, terr0, terr1 = triangulate_3d_points(np.array(flow_intra_inter0).reshape(-1,2), 
-                                                                np.array(flow_intra_inter3).reshape(-1,2), 
-                                                                K0, 
-                                                                K1, 
-                                                                rot_01, 
-                                                                trans_01)
-                avg_depth = np.mean(points013[:,2])
-                min_depth = np.min(points013[:,2]) / 4
-                max_depth = np.max(points013[:,2]) + 2 * avg_depth
-                
-            except:
-                min_depth = 3
-
-
-
-            try:
-                points01, terr01_0, terr01_1 = triangulate_3d_points(self.flow_intra0, self.flow_intra1, K0, K0, rot, trans)
-            except:
-                return 0
-            n_bad01 = 0
-
-            for idx, pt01_depth in enumerate(points01[:,2]):
-                if pt01_depth > min_depth and pt01_depth < max_depth:
-                    flow_intra0_new.append(self.flow_intra0[idx])
-                    flow_intra1_new.append(self.flow_intra1[idx])
-                elif debug:
-                    print('noisy 01 point', 
-                        self.flow_intra0[idx][0],self.flow_intra0[idx][1], 
-                        self.flow_intra1[idx][0],self.flow_intra1[idx][1], 
-                        pt01_depth)
-                    n_bad01 += 1
-            self.flow_intra0 = np.array(flow_intra0_new, dtype=np.float64)
-            self.flow_intra1 = np.array(flow_intra1_new, dtype=np.float64)
-            return n_bad01
+parser.add_argument(
+    '-temportal_stereo',
+    '--temportal_stereo_enable',
+    help='Whether to use the temporal only stereo matching',
+    type=bool,
+    default=USE_01_FEATURE)
+
+parser.add_argument(
+    '-points_param',
+    '--points_param_enable',
+    help='Whether to put points into the parameter list',
+    type=bool,
+    default=False)
 
 
 class EgoMotion:
-    """Kite vision object"""
-    def __init__(self, calib_file=None, num_cams=4, num_features=64, dataset=DATASET, input_path=None, data_seq=None, json_output=True, ransac=False):
-        self.num_features = num_features
-        self.navcams      = []
-        self.STEREOCONFG    = [1, 0, 3, 2]
-        self.num_imgs = 0
-        self.focal = None
+    """EgoMotion object"""
+    def __init__(self, image_path = None,
+                       calib_file = None, 
+                       num_cams = 4, 
+                       num_features = 64, 
+                       init_json_path = None, 
+                       use_linear_seed = False, 
+                       distorted_image = True,
+                       output_path = None,
+                       stereo_rectify = False,
+                       temportal_stereo = True, 
+                       points_params = False):
 
-        self.trueX, self.trueY, self.trueZ = 0, 0, 0
-        self.max_cams = 4
+        self.ips_data = False
+        self.num_features = num_features
+        self.STEREOCONFG  = [1, 0, 3, 2]
+        self.camera_images = get_image_files(image_path)
+        self.distorted_image = distorted_image
+        self.num_imgs  = len(self.camera_images)
+        self.num_cams = num_cams
+        self.stereo_rectify = stereo_rectify
+        self.json_log_list = None
+        self.use_linear_seed = use_linear_seed
+        self.use_temportal_stereo = temportal_stereo
+        self.points_params = True
+        # self.kl = kiteJsonLog(VO_KITE_LOG)
+
+        if init_json_path is not None:
+            self.json_log_list = load_json_to_list(init_json_path)
+
+        self.json_motion_log = None
+        if output_path is not None:
+            if not os.path.exists(output_path):
+                os.mkdir(output_path)
+            log_file_name = os.path.join(output_path, 'motion_debug2.json')
+            self.json_motion_log = open(log_file_name, 'w')
+
+        self.rotation_cam0_to_cam2 = None
+        self.translation_cam0_to_cam2 = None
+
+        self.rotation_cam2_to_cam0 = None
+        self.translation_cam2_to_cam0 = None
+
+
+        self.navcams = []
+        self.create_cameras(calib_file, num_cams)
+
         # Kitti: images of each camera are stored s
         # Kite: images have been concatenated into one image
-        self.camera_images = None
-        self.prev_scale = 1.0
         self.img_idx = -1
-        self.dataset = dataset.lower()
-        self.dataset_seq = data_seq
-        self.annotations = get_kitti_ground_truth(input_path, data_seq)
 
-        self.rotation_cam0_to_cam2 = np.identity(3)
-        self.translation_cam0_to_cam2 = np.zeros((3,1))
+        self.history_egomotion = np.zeros((1,6))
 
-        self.rotation_cam2_to_cam0 = np.identity(3)
-        self.translation_cam2_to_cam0 = np.zeros((3,1))
-
-        self.prev_egomotion = np.zeros((1,6))
-        self.prev_invalid = True
-        self.syncer = None
         self.json_log = None
         self.csv_writer = None
 
-        self.prev_ts = 0
-        self.prev_acsmeta = None
-        self.curr_acsmeta = None
+        self.prev_timestamp = 0
+        self.curr_timestamp = 0
         self.ned_vel_err = np.zeros([3,1])
         self.vel_covar = np.zeros([6,1])
 
@@ -710,93 +168,75 @@ class EgoMotion:
 
         self.csv_log_file = None
         self.json_log_file = None
-        self.digits_detect =  DigitsDetect()
 
-        if self.dataset.lower() == 'kitti':
-            self.camera_images = get_kitti_image_files(input_path, data_seq, num_cams)
-            self.camera_images.sort(key=lambda f: int(filter(str.isdigit, f)))
-            # import pdb; pdb.set_trace()
-            self.num_imgs  = len(self.camera_images[0])
-            self.num_cams = len(self.camera_images)
-        elif self.dataset.lower() == 'kite':
-            self.camera_images = get_kite_image_files(input_path, KITE_VIDEO_FORMAT, KITE_SKIP_IMAGE_FACTOR)
-            self.camera_images.sort(key=lambda f: int(filter(str.isdigit, f)))
-            self.num_imgs  = len(self.camera_images)
-            self.num_cams = 4
-            if ACS_META:
-                self.syncer = ImageAPCSyncer(ACS_META)
-                log_file_name = os.path.join(input_path, 'log.csv')
-                if os.path.exists(log_file_name):
-                    old_log_file_name = log_file_name + str(datetime.now().time())
-                    print('backing up the old log ', log_file_name)
-                    shutil.move(log_file_name, old_log_file_name)
-                self.csv_log_file = open(log_file_name, 'w')
-                self.csv_writer = csv.writer(self.csv_log_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL) 
-                self.csv_writer.writerow(self.syncer.get_json_keys())
 
-                log_file_name = os.path.join(input_path, 'log.json')
-                if os.path.exists(log_file_name):
-                    old_log_file_name = log_file_name + str(datetime.now().time())
-                    print('backing up the old log ', log_file_name)
-                    shutil.move(log_file_name, old_log_file_name)
-                self.json_log_file = open(log_file_name, 'w')
+        self.motion_rotation = cv2.Rodrigues(np.eye(3))[0]
+        self.motion_translation = np.zeros([3, 1])
 
-        else:
-            raise ValueError('Unsupported dataset')
+        self.position = np.zeros((3, 1))
+        self.orientation = np.eye(3)
 
-        mtx, dist, rot, trans, imu_rot, imu_trans = load_camera_calib(dataset, calib_file, num_cams)
+        self.trueX, self.trueY, self.trueZ = 0, 0, 0
+        self.acc_flt = AccFilter(9, 20, 300)
 
-        if self.dataset.lower() == 'kite':
-            self.rotation_body_to_cam0, self.translation_body_to_cam0 = compute_body_to_camera0_transformation(IMU_TO_BODY_ROT, imu_rot[0], imu_trans[0])
-        else:
-            self.rotation_body_to_cam0 = np.eye(3)
-            self.translation_body_to_cam0 = np.zeros((3,1))
+    def get_failed_kite_list(self):
+        ahrs_rate_xyz = self.kl.get_ahrs_rate()
+        vo_angular_xyz = self.kl.get_body_ang_vel()
 
-        self.rotation_cam0_to_body, self.translation_cam0_to_body = invert_RT(self.rotation_body_to_cam0, self.translation_body_to_cam0)
+        vo_ned_vel_cpp = self.kl.vo_dict['ned_lin_vel']
+        gps_ned_vel = self.kl.vo_dict['gps_ned_vel']
 
+        ned_x_err = np.abs(vo_ned_vel_cpp[:,0] - gps_ned_vel[:,0]) > 5
+        ned_y_err = np.abs(vo_ned_vel_cpp[:,1] - gps_ned_vel[:,1]) > 5
+        ned_z_err = np.abs(vo_ned_vel_cpp[:,2] - gps_ned_vel[:,2])
+        linear_mask = ned_x_err | ned_y_err
+        
+        ang_mask_x = np.abs(ahrs_rate_xyz[:,0] - vo_angular_xyz[:,0]) > 0.1
+        ang_mask_y = np.abs(ahrs_rate_xyz[:,1] - vo_angular_xyz[:,1]) > 0.1
+        ang_mask_z = np.abs(ahrs_rate_xyz[:,2] - vo_angular_xyz[:,2]) > 0.1
+
+        angular_mask = ang_mask_x | ang_mask_y | ang_mask_z
+        indexs = np.array(range(1, 1 + len(angular_mask)))[linear_mask]
         # import pdb; pdb.set_trace()
+        return indexs
+        
+    def create_cameras(self, calib_path, num_cams):
+        # Load the calib file
+        mtx, dist, rot, trans, imu_rot, imu_trans = load_camera_calib('kite', calib_path, num_cams)
+        
+        self.rotation_body_to_cam0, self.translation_body_to_cam0 = compute_body_to_camera0_transformation(IMU_TO_BODY_ROT, imu_rot[0], imu_trans[0])
+
+
+        self.rotation_cam0_to_body, self.translation_cam0_to_body = invertRt(self.rotation_body_to_cam0, self.translation_body_to_cam0)
+
         # From nav_calib.cfg
         # Camera trans/rot prev camera to camera. Camera 0 is the first in the chain.
         # IMU trans/rot is imu to camera.
         # Convert the chained calibration cam0 -> cam1 -> cam2 -> cam3
         # to two stereo pair calibration: cam0 -> cam1, cam2 -> cam3
-
         rot_01, trans_01 = rot[1], trans[1]
-        rot_10, trans_10 = invert_RT(rot[1], trans[1])
+        # import pdb; pdb.set_trace()
+        rot_10, trans_10 = invertRt(rot[1], trans[1])
     
         # For Kite there are two stereo pair (0, 1) and (2, 3), 
         # where camera 0 and camera 2 are their reference cameras, we need know the 
         # translation between those two stereo pairs
-        rot_21 = np.identity(3)
-        trans_21 = np.zeros((3,1))
-
-        rot_12 = np.identity(3)
-        trans_12 = np.zeros((3,1))
-        
         rot_23, trans_23 = rot[3], trans[3]
-        rot_32, trans_32 = invert_RT(rot[3], trans[3])
+        rot_32, trans_32 = invertRt(rot[3], trans[3])
     
-        if DATASET == 'kite':
-            rot_12, trans_12 = rot[2], trans[2]
-            
-            rot_02 = np.dot(rot_12, rot_01) 
-            trans_02 = np.dot(rot_12, trans_01) + trans_12
 
-            rot_20, trans_20 = invert_RT(rot_02,trans_02 ) 
-            self.rotation_cam0_to_cam2 = rot_02
-            self.translation_cam0_to_cam2 = trans_02
-            self.rotation_cam2_to_cam0 = rot_20
-            self.translation_cam2_to_cam0 = trans_20
+        rot_12, trans_12 = rot[2], trans[2]
+        rot_02 = np.dot(rot_12, rot_01) 
+        trans_02 = np.dot(rot_12, trans_01) + trans_12
 
-        rot[0], trans[0] = rot_01, trans_01
-        rot[1], trans[1] = rot_10, trans_10
-        rot[2], trans[2] = rot_23, trans_23
-        rot[3], trans[3] = rot_32, trans_32
+        rot_20, trans_20 = invertRt(rot_02,trans_02 ) 
+        self.rotation_cam0_to_cam2 = rot_02
+        self.translation_cam0_to_cam2 = trans_02
+        self.rotation_cam2_to_cam0 = rot_20
+        self.translation_cam2_to_cam0 = trans_20
 
-        self.stereo_rectified_P = [None, None, None, None]
-        self.stereo_rectified_R = [None, None, None, None]
 
-        if STEREO_RECTIFY_ENABLED:
+        if self.stereo_rectify:
             R00, R01, P00, P01, Q = fisheyeStereoRectify(
                 mtx[0], dist[0][0:4], 
                 mtx[1], dist[1][0:4], 
@@ -809,84 +249,122 @@ class EgoMotion:
 
             self.stereo_rectified_P = [P00, P01, P10, P11]
             self.stereo_rectified_R = [R00, R01, R10, R11]
-        # import pdb; pdb.set_trace()
-        self.rot_01 = rot_01
-        self.trans_01 = trans_01
+        else:
+            self.stereo_rectified_P = [None, None, None, None]
+            self.stereo_rectified_R = [None, None, None, None]
 
-        self.ego_R = cv2.Rodrigues(np.eye(3))[0]
-        self.ego_t = np.zeros([3, 1])
-        self.initial_origin = np.zeros((3, 1))
-        self.pose_t = np.zeros((3, 1))
-        self.pose_R = np.eye(3)
-
-        if DATASET == 'kite' and self.syncer:
-            self.initial_origin, self.pose_R = self.syncer.get_initial_pose()
-            print('*************', self.initial_origin, '*************')
-
-        # Compute the fundamental matrix
+        rot[0], trans[0] = rot_01, trans_01
+        rot[1], trans[1] = rot_10, trans_10
+        rot[2], trans[2] = rot_23, trans_23
+        rot[3], trans[3] = rot_32, trans_32
+        # Create cameras
         for left in range(self.num_cams):
             right = self.STEREOCONFG[left]
-            self.navcams.append(navcam(left, 
-                self.STEREOCONFG[left], 
-                mtx[left], dist[left], rot[left], trans[left], 
-                self.num_features,
-                self.stereo_rectified_P,
-                self.stereo_rectified_R))
+            self.navcams.append(navcam(left, self.STEREOCONFG[left], mtx[left], dist[left], rot[left], trans[left], 
+                self.num_features, self.stereo_rectified_P, self.stereo_rectified_R))
 
         # Set each camera's stereo config
         for left in range(self.num_cams):
             self.navcams[left].set_stereo_pair(self.navcams[self.STEREOCONFG[left]])
 
     def close(self):
-        self.json_log_file.close()
-        self.json_log_file = None
-        self.csv_log_file.close()
-        self.csv_log_file = None
+        if self.json_motion_log is not None:
+            self.json_motion_log.close()
+            self.json_motion_log = None
+        if self.csv_log_file is not None:
+            self.csv_log_file.close()
+            self.csv_log_file = None
 
-    def detect_timestamp(self, image):
-        DIGIT_POS = (vertices_large_0[0][0], vertices_large_0[0][1] + 80)
-        MAX_TEXT_H = 10
-        IMG_H, IMG_W = image.shape
+    def vis3(self, cam_id, img_idx, flow0, flow1, flow3, rot_params = None, trans_params = None, points3d_stereo = None, points3d_temporal = None):
+        
 
-        image_roi = image[DIGIT_POS[1]-MAX_TEXT_H:DIGIT_POS[1]+MAX_TEXT_H, DIGIT_POS[0]:IMG_W]
-        try:
-            num = self.digits_detect.detect(image_roi)
-            return num
-        except:
-            return -1
+        curr_img = self.navcams[cam_id].curr_img
+        prev_img = self.navcams[cam_id].prev_img
+        curr_stereo_img = self.navcams[cam_id].curr_stereo_img
+        cam = self.navcams[cam_id]
 
-    def load_kitti_gt(self, frame_id):  #specialized for KITTI odometry dataset
-        ss = self.annotations[frame_id-1].strip().split()
-        x_prev = float(ss[3])
-        y_prev = float(ss[7])
-        z_prev = float(ss[11])
-        ss = self.annotations[frame_id].strip().split()
-        x = float(ss[3])
-        y = float(ss[7])
-        z = float(ss[11])
-        self.trueX, self.trueY, self.trueZ = x, y, z
-        return np.sqrt((x - x_prev)*(x - x_prev) + (y - y_prev)*(y - y_prev) + (z - z_prev)*(z - z_prev))
-       
-    def update_keypoints(self, img_id):
+        if points3d_stereo is None:
+            try:
+                points03, _, _ = triangulate_3d_points(flow0, flow3, cam.calib_K, cam.stereo_pair_cam.calib_K, cam.calib_R, cam.calib_t)
+            except:
+                pass
+        else:
+            points03 = points3d_stereo
+
+        img1 = cv2.cvtColor(curr_img, cv2.COLOR_GRAY2BGR)
+        img2 = cv2.cvtColor(curr_stereo_img, cv2.COLOR_GRAY2BGR)
+
+        # import pdb; pdb.set_trace()
+        for pt1, pt3, wp in zip(flow0, flow3, points03):
+            x1, y1 = (int(pt1[0]), int(pt1[1]))
+            x3, y3 = (int(pt3[0]), int(pt3[1]))
+            color = tuple(np.random.randint(0,255,3).tolist())
+            depth = "{:.1f}".format(wp[2])
+            cv2.putText(img1, depth, (x1 + 10, y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, lineType=cv2.LINE_AA) 
+            cv2.putText(img2, depth, (x3 + 10, y3 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, lineType=cv2.LINE_AA) 
+            cv2.circle(img1,(x1, y1), 6, color,2)
+            cv2.circle(img2,(x3, y3), 6, color,2)
+
+        img_stereo = concat_images(img1, img2)
+
+        if points3d_temporal is None:
+            try:
+                points01, _, _ = triangulate_3d_points(flow0, flow1, cam.calib_K, cam.calib_K, rot_params, trans_params)
+            except:
+                points01 = points03
+        else:
+            points01 = points3d_temporal
+
+        img1 = cv2.cvtColor(curr_img, cv2.COLOR_GRAY2BGR)
+        img2 = cv2.cvtColor(prev_img, cv2.COLOR_GRAY2BGR)
+
+        # import pdb; pdb.set_trace()
+        for pt1, pt3, wp in zip(flow0, flow1, points01):
+            x0, y0 = (int(pt1[0]), int(pt1[1]))
+            x1, y1 = (int(pt3[0]), int(pt3[1]))
+            color = tuple(np.random.randint(0,255,3).tolist())
+            depth = "{:.1f}".format(wp[2])
+            cv2.putText(img1, depth, (x1 + 10, y1 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, lineType=cv2.LINE_AA) 
+            cv2.putText(img2, depth, (x3 + 10, y3 + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, lineType=cv2.LINE_AA) 
+            cv2.circle(img1,(x0, y0), 6, color,2)
+            cv2.circle(img2,(x1, y1), 6, color,2)
+
+        img_tempo = concat_images(img1, img2)
+
+        img_out = stack_images(img_stereo, img_tempo)
+
+
+        if img_out is not None:
+            out_img_name = os.path.join('/tmp/pyego', 'cam' + str(cam_id) + '_' + str(img_idx)+'.jpg')
+            cv2.imwrite(out_img_name, img_out)
+
+    def keypointsDetection(self, img_id):
         for i in range(self.num_cams):
             if i in CAMERA_LIST:
                 self.navcams[i].keypoint_detection()
 
-    def update_inter_optflow(self):
+    def updateInterOptflow(self):
         for i in range(self.num_cams):
             if i in CAMERA_LIST:
                 self.navcams[i].inter_sparse_optflow()
 
-    def update_intra_optflow(self):
+    def updateIntraOptflow(self):
         if self.img_idx > 0:
             for i in range(self.num_cams):
                 if i in CAMERA_LIST:
                     self.navcams[i].intra_sparse_optflow()
-              
-    def outliers_removal(self, debug=False):
+
+    def updateCircularOptflow(self):
+        if self.img_idx > 0:
+            for i in range(self.num_cams):
+                if i in CAMERA_LIST:
+                    ret = self.navcams[i].circular_optflow()
+            
+
+    def outliersRejection(self, debug=False):
         for c in range(self.num_cams):
             if c in CAMERA_LIST:
-                self.navcams[c].outliers_removal(debug=debug)
+                self.navcams[c].outliersRejection(debug=debug)
 
     def load_features_from_json(self, json_feature_path, NUM_CAMS=4, PREFIX='frame'):
         json_name = PREFIX + str(self.img_idx) + '.json'
@@ -910,65 +388,25 @@ class EgoMotion:
                 except:
                     print(json_file, 'error for loading feature for cam ', i)
 
-    def upload_images_acsmeta(self, imgs_x4, ts):
+    def uploadImages(self, imgs_x4):
         self.img_idx += 1
         for c in range(self.num_cams):        
             self.navcams[c].update_image(imgs_x4)        
-        if ts and DATASET == 'kite' and self.syncer:
-            self.prev_acsmeta = self.curr_acsmeta
-            self.curr_acsmeta = self.syncer.get_closest_acs_metadata(self.img_idx)
 
-    def compute_acsmeta_transformation_1_to_0(self):
-        if self.curr_acsmeta is None or self.prev_acsmeta is None:
-            return None
-        # transformation at time t0 and t1 with respect to takeoff NED
-        Rw0, tw0 = get_position_orientation_from_acsmeta(self.prev_acsmeta)
-        Rw1, tw1 = get_position_orientation_from_acsmeta(self.curr_acsmeta)
+    def getOneImage(self, img_idx):
+        img = read_kite_image(self.camera_images, self.num_cams, KITE_VIDEO_FORMAT, img_idx)
+        timestamp = -1
 
-        r1_inv, t1_inv = invert_RT(Rw1, tw1)
+        if img is not None and self.distorted_image:
+            for i in range(4):
+                img[i] = self.navcams[i].undistortImage(img[i])
+        try:
+            json_line = self.json_log_list[img_idx]
+            timestamp = json_line['arm_timestamp']
+        except:
+            pass
+        return img, timestamp
 
-        rotation_0_to_1 = r1_inv.dot(Rw0)
-        translation_0_to_1 = r1_inv.dot(tw0) + t1_inv
-        
-        time_diff = (self.curr_acsmeta[1] - self.prev_acsmeta[1]) / 1e3
-        # Convert the transformation to '1 to 0'
-        rotation, translation = invert_RT(rotation_0_to_1, translation_0_to_1)
-    
-        return rotation, translation, time_diff
-
-    def get_acs_pose(self, index):
-        return self.syncer.get_closest_position(index)
-        
-    def read_one_image(self, img_idx):
-        ts = -1 
-        if self.dataset == 'kitti':
-            return read_kitti_image(self.camera_images, self.num_cams, img_idx), ts
-        elif self.dataset == 'kite':
-            img, ts = read_kite_image(self.camera_images, self.num_cams, KITE_VIDEO_FORMAT, img_idx)
-            # ts = self.syncer.get_image_timestamp(img_idx)
-            ts = self.detect_timestamp(img[0])
-
-            import pdb; pdb.set_trace()
-            
-            if img is None:
-                return None, ts
-            # import pdb; pdb.set_trace()
-            if KITE_UNDISTORION_NEEDED:
-                img_bgr = []
-                for i in range(4):
-                    img[i] = self.navcams[i].undistortImage(img[i])
-                    # img[i] = undistortImage(img[i], self.navcams[i].calib_K0, self.navcams[i].calib_K, self.navcams[i].calib_d)
-
-                    #tmp = cv2.cvtColor(img[i], cv2.COLOR_GRAY2BGR)
-                    #img_bgr.append(tmp)
-                #img_ = concat_images_list(img_bgr)
-                #cv2.imwrite('/tmp/' + str(img_idx) + '.jpg', img_)
-            # import pdb; pdb.set_trace()
-   
-
-            return img, ts
-        else:
-            raise ValueError('read_one_image failed: unsupported dataset')
 
     def local_ego_motion_solver(self, cam_list=[0]):
         for c in cam_list:
@@ -981,77 +419,40 @@ class EgoMotion:
         if R.shape != (3, 3):
             R = cv2.Rodrigues(R.reshape(3,1))[0]
 
-        self.ego_R = R
-        self.ego_t = t
-        self.prev_scale = norm(t) if norm(t) > 0.01 else self.prev_scale
+        self.motion_rotation = R
+        self.motion_translation = t
+
         if norm(t) > 10:
-            return self.pose_R, self.pose_t
+            return self.orientation, self.position
         # C(k) = C(k-1) * T(k, k-1)
-        self.pose_t = self.pose_t + self.pose_R.dot(t) 
-        self.pose_R = self.pose_R.dot(R)
-        return self.pose_R, self.pose_t
+        try:
+            self.position = self.position + self.orientation.dot(t) 
+            self.orientation = self.orientation.dot(R)
+        except:
+            # import pdb; pdb.set_trace()
+            pass
+        return self.orientation, self.position
 
     def get_egomotion(self):
-        return self.ego_R, self.ego_t
+        return self.motion_rotation, self.motion_translation
 
     def get_global_camera_pose(self):
-        return self.pose_R, self.pose_t
+        return self.orientation, self.position
     
-    def global_fun(self, x0, cam_obs, y_meas, cam_list=range(4)):
-        num_cams = len(cam_list)
-        rot_vecs   = x0[0:3]
-        trans_vecs = x0[3:6]
-        x0_offset = 6
+    def reprojection_error(self, x0, cam_obs, z_global, cam_list, points_3d = None):
+        if points_3d is None:
+            x0_offset = 6
+            points = x0
+        else:
+            x0_offset = 0
+            points = points_3d
+
         y_offset = 0
         cost_err = None
-        
-        rotation_list = []
-        translation_list = []
-
-        rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6].reshape(3, 1)
-
-        rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
-                                                                                                  translation_camera0_frame, 
-                                                                                                  self.navcams[0].calib_R, 
-                                                                                                  self.navcams[0].calib_t)
-        rotation_list.append(rotation_camera0_frame)
-        translation_list.append(translation_camera0_frame)
-
-        rotation_list.append(rotation_camera1_frame)
-        translation_list.append(translation_camera1_frame)
-
-        if DATASET == 'kite':
-            rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
-                                                                                                    translation_camera0_frame, 
-                                                                                                    self.rotation_cam0_to_cam2, 
-                                                                                                    self.translation_cam0_to_cam2)
-
-            rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
-                                                                                                    translation_camera2_frame, 
-                                                                                                    self.navcams[2].calib_R, 
-                                                                                                    self.navcams[2].calib_t)
-
-            rotation_list.append(rotation_camera2_frame)
-            translation_list.append(translation_camera2_frame)
-
-            rotation_list.append(rotation_camera3_frame)
-            translation_list.append(translation_camera3_frame)
-
-        cv2.Rodrigues(rotation_camera1_frame)[0]
-
+        rotation_list, translation_list = self.transformMotionToCamerai(x0[0:3], x0[3:6])
         for index, c in enumerate(cam_list):
-            if c == 0:
-                egomotion_rotation = rotation_camera0_frame
-                egomotion_translation = translation_camera0_frame
-            elif c == 1:
-                egomotion_rotation = rotation_camera1_frame
-                egomotion_translation = translation_camera1_frame
-            elif c == 2:
-                egomotion_rotation = rotation_camera2_frame
-                egomotion_translation = translation_camera2_frame
-            else:
-                egomotion_rotation = rotation_camera3_frame
-                egomotion_translation = translation_camera3_frame
+            egomotion_rotation = rotation_list[c]
+            egomotion_translation = translation_list[c]
 
             rot_vecs = cv2.Rodrigues(egomotion_rotation)[0]
             trans_vecs = egomotion_translation
@@ -1065,10 +466,10 @@ class EgoMotion:
             stereo_translation = cur_cam.calib_t
 
             if n_obj_013 > 0:      
-                points_013 = x0[x0_offset: x0_offset + 3 * n_obj_013].reshape(-1, 3)
-                flow013_0  = y_meas[y_offset: y_offset + n_obj_013]
-                flow013_1  = y_meas[y_offset+ n_obj_013: y_offset + 2 * n_obj_013]
-                flow013_3  = y_meas[y_offset + 2 * n_obj_013: y_offset + 3 * n_obj_013]
+                points_013 = points[x0_offset: x0_offset + 3 * n_obj_013].reshape(-1, 3)
+                flow013_0  = z_global[y_offset: y_offset + n_obj_013]
+                flow013_1  = z_global[y_offset+ n_obj_013: y_offset + 2 * n_obj_013]
+                flow013_3  = z_global[y_offset + 2 * n_obj_013: y_offset + 3 * n_obj_013]
 
                 points_3x1 = points_013
                 observations_2x1 = flow013_1
@@ -1079,8 +480,12 @@ class EgoMotion:
                 flow0_err = reprojection_error(points_013, flow013_0, camera_matrix)
                 flow1_err = reprojection_error(points_013, flow013_1, camera_matrix, rot_vecs, trans_vecs)
                 flow3_err = reprojection_error(points_013, flow013_3, stereo_matrix, stereo_rotation, stereo_translation)
+                
+                if self.points_params:
+                    flow013_errs = np.vstack((flow0_err, flow1_err, flow3_err))
+                else:
+                    flow013_errs = flow1_err
 
-                flow013_errs = np.vstack((flow0_err, flow1_err, flow3_err))
                 x0_offset += 3 * n_obj_013
                 y_offset += 3 * n_obj_013
 
@@ -1090,9 +495,9 @@ class EgoMotion:
                     cost_err = np.vstack([cost_err, flow013_errs])
 
             if n_obj_01 > 0:
-                points_01  = x0[x0_offset: x0_offset+3*n_obj_01].reshape(-1, 3)
-                flow01_0  = y_meas[y_offset: y_offset + n_obj_01]
-                flow01_1  = y_meas[y_offset + n_obj_01: y_offset + 2 * n_obj_01]
+                points_01  = points[x0_offset: x0_offset+3*n_obj_01].reshape(-1, 3)
+                flow01_0  = z_global[y_offset: y_offset + n_obj_01]
+                flow01_1  = z_global[y_offset + n_obj_01: y_offset + 2 * n_obj_01]
                 
                 flow0_err = reprojection_error(points_01, flow01_0, camera_matrix)
                 flow1_err = reprojection_error(points_01, flow01_1, camera_matrix, rot_vecs, trans_vecs)
@@ -1142,536 +547,525 @@ class EgoMotion:
     def update_pose_by_prev_motion(self):
         return self.update_global_camera_pose_egomotion(self.prev_rot, self.prev_trans)
 
-    def nonUniqueSolutionDetetion(self, x,  cam_obs, y_meas, cam_list, scale=2.5):
+    def nonUniqueSolutionDetetion(self, x,  cam_obs, z_global, cam_list, scale=2.5):
         x_scaled = x.copy()
-        err0 = self.global_fun(x, cam_obs, y_meas, cam_list)
+        err0 = self.reprojection_error(x, cam_obs, z_global, cam_list)
         x_scaled[3:] = scale * x_scaled[3:]
-        err1 = self.global_fun(x_scaled, cam_obs, y_meas, cam_list)
+        err1 = self.reprojection_error(x_scaled, cam_obs, z_global, cam_list)
         diff = np.absolute(err0 - err1)
         diff_norm = norm(diff)
-        
-
-    def egomotion_solver(self, img_idx=None, ts = None, cam_list=[0, 1], est=None, debug_json_path=None):
-        if img_idx is None or img_idx == 0:
-            return self.update_pose_by_prev_motion()
-
-        num_cams = len(cam_list)
-        cam_obs = np.zeros([num_cams, 2], dtype=np.int)
-        y_meas = None
-
-        time_diff_image = (ts - self.prev_ts) / 1e3
-
-        time_diff = min(0.067, time_diff_image)
-
-
-        rot0, trans0, camera_index, rot_list, trans_list, masks = self.get_init_motion_from_mono_estimation(cam_list)
-
-        if camera_index == -1:
-            print('error: no initial estimation from 5 point are avalaible')
-            return self.update_pose_by_prev_motion()
-
-
-        if EGOMOTION_SEED_OPTION == 0:
-            # Estimate each camera's local egomotion by 5 point algorithm   
-            x0 = np.vstack([rot0, trans0])
-        else:
-            x0 = self.syncer.get_init_motion(self.img_idx)
-
-        self.prev_ts = ts
     
-        json_data = {}
-        json_data['egomotion'] = {}
-        json_data['egomotion']['initial'] = x0.ravel().tolist()
-        json_data['image_timestamp'] = ts
-        json_data['dsp_timestamp'] = self.syncer.get_image_dsp_timestamp(img_idx)
-    
-        rot0 = x0[0:3]
-        trans0 = x0[3:6]
-
+    def transformMotionToCamerai(self, rotation_camera0, translation_camera0):
         rotation_list = []
         translation_list = []
 
-        rotation_camera0_frame, translation_camera0_frame = cv2.Rodrigues(x0[0:3])[0], x0[3:6].reshape(3, 1)
+        if rotation_camera0.shape != (3, 3):
+            rotation_camera0 = cv2.Rodrigues(rotation_camera0)[0]
 
-        rotation_camera1_frame, translation_camera1_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
-                                                                                                  translation_camera0_frame, 
-                                                                                                  self.navcams[0].calib_R, 
-                                                                                                  self.navcams[0].calib_t)
+        translation_camera0 = translation_camera0.reshape(3, 1)
+
+
+        rotation_camera1, translation_camera1 = transform_egomotion_from_frame_a_to_b(rotation_camera0, 
+                                                                                      translation_camera0, 
+                                                                                      self.navcams[0].calib_R, 
+                                                                                      self.navcams[0].calib_t)
         
 
-        rotation_list.append(rotation_camera0_frame)
-        translation_list.append(translation_camera0_frame)
+        rotation_list.append(rotation_camera0)
+        translation_list.append(translation_camera0)
 
-        rotation_list.append(rotation_camera1_frame)
-        translation_list.append(translation_camera1_frame)
+        rotation_list.append(rotation_camera1)
+        translation_list.append(translation_camera1)
 
-        if DATASET == 'kite':
-            rotation_camera2_frame, translation_camera2_frame = transform_egomotion_from_frame_a_to_b(rotation_camera0_frame, 
-                                                                                                    translation_camera0_frame, 
+        if self.num_cams == 4:
+            rotation_camera2, translation_camera2 = transform_egomotion_from_frame_a_to_b(rotation_camera0, 
+                                                                                                    translation_camera0, 
                                                                                                     self.rotation_cam0_to_cam2, 
                                                                                                     self.translation_cam0_to_cam2)
 
-            rotation_camera3_frame, translation_camera3_frame = transform_egomotion_from_frame_a_to_b(rotation_camera2_frame, 
-                                                                                                    translation_camera2_frame, 
+            rotation_camera3, translation_camera3 = transform_egomotion_from_frame_a_to_b(rotation_camera2, 
+                                                                                                    translation_camera2, 
                                                                                                     self.navcams[2].calib_R, 
                                                                                                     self.navcams[2].calib_t)
-
-            rotation_list.append(rotation_camera2_frame)
-            translation_list.append(translation_camera2_frame)
-
-            rotation_list.append(rotation_camera3_frame)
-            translation_list.append(translation_camera3_frame)
-            
-        for index, c  in enumerate(cam_list):
-            egomotion_rotation = rotation_list[c]
-            egomotion_translation = translation_list[c]
-
-            if self.navcams[c].flow_intra_inter0 is None:
-                continue
-
-            n_bad = self.navcams[c].filter_keypoints_extra(egomotion_rotation, egomotion_translation)
-
-            cur_cam = self.navcams[c]            
-            K0 = cur_cam.calib_K
-            K1 = cur_cam.stereo_pair_cam.calib_K
-            n_obs_i = cur_cam.flow_intra_inter0.shape[0]
-            n_obs_j = cur_cam.flow_intra0.shape[0]
-            # n_obs_i = 0
-
             # import pdb; pdb.set_trace()
-            if not USE_01_FEATURE:
-                n_obs_j = 0
 
-            json_data['cam'+str(c)] = {}
-            json_data['cam'+str(c)]['n_flow013'] = n_obs_i
-            json_data['cam'+str(c)]['n_flow01'] = n_obs_j
-            json_data['cam'+str(c)]['raw_kpts'] = self.navcams[c].flow_kpt0.ravel().tolist()
-            json_data['cam'+str(c)]['n_raw_kpts'] = MAX_NUM_KEYPOINTS
+            rotation_list.append(rotation_camera2)
+            translation_list.append(translation_camera2)
+
+            rotation_list.append(rotation_camera3)
+            translation_list.append(translation_camera3)
+        return rotation_list,  translation_list
+
+    def orientatonToNed(self, img_idx):
+        if self.ips_data:
+            try:
+                js = self.json_log_list[img_idx]
+                ips_orient_q_wf = js["ips_orient_q_wf"]
+                Rmtx = Q2R(ips_orient_q_wf)  
+                return Rmtx
+            except:
+                print('Read ips_orient_q_wf failed')
+                import pdb; pdb.set_trace()
+                return np.eye(3)
+        else:
+            try:
+                js = self.json_log_list[img_idx]
+            except:
+                return np.eye(3)
+            try:
+                acs_est_orentation = js["acs_est_orentation"]
+                return cv2.Rodrigues(acs_est_orentation)[0]
+            except:
+                try:
+                    ahrs_kf4_Qest = js["ahrs_kf4_Qest"]
+                    return Q2R(ahrs_kf4_Qest)    
+                except:
+                    return np.eye(3)
+
+    def gpsNedVelocity(self, img_idx):
+        if self.ips_data:
+            try:
+                js = self.json_log_list[img_idx]
+                ned_vel = js["ips_ned_vel"]
+                return np.array(ned_vel)
+            except:
+                return None
+        else:
+            try:
+                js = self.json_log_list[img_idx]
+                gps_ned_vel = js["gps_ned_vel"]
+                return np.array(gps_ned_vel)
+            except:
+                return None
+
+    def gpsNedPosition(self, img_idx):
+        if self.ips_data:
+            try:
+                js = self.json_log_list[img_idx]
+                gps_ned_pos = js["ips_ned_pos"]
+                return np.array(gps_ned_pos)
+            except:
+                return None
+        else:
+            try:
+                js = self.json_log_list[img_idx]
+                gps_ned_pos = js["gps_ned_pos"]
+                return np.array(gps_ned_pos)
+            except:
+                return None
+
+    def getLoggedInitMotion(self, img_idx):
+        try:
+            json_line = self.json_log_list[img_idx]
+            x0 = np.array(json_line['opt_motion']).reshape(-1,1)
+            return x0
+        except:
+            return None
+
+
+    def getMonoInitMotion(self, cam_list):
+        rot0, trans0, camera_index, rot_list, trans_list, masks = self.get_init_motion_from_mono_estimation(cam_list)
+        if camera_index == -1:
+            print('error: no initial estimation from 5 point are avalaible')
+            return None
+        if rot0.shape == (3,3):
+            rot0 = cv2.Rodrigues(rot0)[0]
+        return np.vstack([rot0, trans0])
+
+    def computeEgomotionRansac(self, cam_id = 0, motion_params = None):
+        ''' Compute the motion by ransac
+        '''    
+        left_cam = self.navcams[cam_id]
+        
+        MIN_PTS = 5
+
+        if left_cam.flow_intra_inter0 is None or left_cam.flow_intra_inter0.shape[0] < MIN_PTS:
+            return
+        
+        points013, _, _ = triangulate_3d_points(left_cam.flow_intra_inter0, left_cam.flow_intra_inter3, 
+                                                left_cam.calib_K, left_cam.stereo_pair_cam.calib_K, 
+                                                left_cam.calib_R, left_cam.calib_t)
+
+
+        MAX_ITERS = 10
+        N = len(points013)
+        K = MIN_PTS
+        
+
+        # RANSAC
+        itr = 0
+        cam_list = [cam_id]
+        best_err_opt = 1000.0
+        best_mask = np.array([True] * N)
+        best_inliers = -1
+        best_res = None
+        while itr < MAX_ITERS:
+            itr += 1
+            ransac_mask = np.array([True] * K + [False] * (N-K))
+            np.random.shuffle(ransac_mask)
+
+            res, _, _ = self.leastSquaresOpt([cam_id], motion_params, [ransac_mask])
+            if res is None:
+                continue        
+        
+            rot_params = res.x[0:3].reshape(-1, 1)
+            trans_params = res.x[3:6].reshape(-1, 1)
+
+            pts1 = points013.ravel().reshape(-1, 1)
+            x1 = np.vstack([res.x[0:6].reshape(-1,1), pts1])
+
+            z1 = np.vstack([left_cam.flow_intra_inter0, left_cam.flow_intra_inter1, left_cam.flow_intra_inter3])
+            cam_obs = np.zeros([1, 2], dtype=np.int)
+            cam_obs[0][0] = N 
+
+            if self.points_params is False:
+                points_3d = x1[6:]
+            else:
+                points_3d = None
+                
+            err1_opt = self.reprojection_error(x1[0:6], cam_obs, z1, cam_list, points_3d).reshape(-1, 2)
+            err_2d = norm(err1_opt, axis=1)
+
+            points01, _, _ = triangulate_3d_points(left_cam.flow_intra_inter0, left_cam.flow_intra_inter1, left_cam.calib_K, left_cam.calib_K, cv2.Rodrigues(rot_params)[0], trans_params)
+                
+            err_3d = norm(points01 - points013.reshape(-1,3), axis=1)
+
+            mask_2d = err_2d < 0.5
+            mask_3d = err_3d < 0.5
+
+            ransac_mask = mask_2d
+
+            if np.sum(ransac_mask) > best_inliers:
+                best_mask = ransac_mask
+                best_inliers = np.sum(ransac_mask)
+                print('=================== n_inliers: {} vs {}'.format(np.sum(ransac_mask), ransac_mask.shape[0] ))
+                # import pdb; pdb.set_trace()
+        return best_mask
+
+        
+
+
+    def leastSquaresOpt(self, cam_list, motion_params_6dof, mask_list = None):
+
+        rotation_list, translation_list = self.transformMotionToCamerai(motion_params_6dof[0:3], motion_params_6dof[3:6])
+
+        z_global = None
+        x0 = motion_params_6dof.reshape(-1,1)
+        num_cams = len(cam_list)
+        cam_obs = np.zeros([num_cams, 2], dtype=np.int)
+
+        for index, cam_id  in enumerate(cam_list):
+            cur_cam = self.navcams[cam_id]
+            if cur_cam.flow_intra_inter0 is None:
+                continue
+            
+            n_obs_i = cur_cam.flow_intra_inter0.shape[0]
+
+            try:
+                mask = mask_list[index]
+            except:
+                mask = np.array([True] * n_obs_i)
+
+
+            cur_rotation, cur_translation = rotation_list[cam_id], translation_list[cam_id]
+
+            n_obs_i = np.sum(mask)
 
             if n_obs_i > 0:
-                flow0 = cur_cam.flow_intra_inter0
-                flow1 = cur_cam.flow_intra_inter1
-                flow3 = cur_cam.flow_intra_inter3    
-                points013, terr013_0, terr013_1 = triangulate_3d_points(flow0, flow3, 
-                                           K0, 
-                                           K1, 
+                flow0 = cur_cam.flow_intra_inter0[mask==True]
+                flow1 = cur_cam.flow_intra_inter1[mask==True]
+                flow3 = cur_cam.flow_intra_inter3[mask==True]    
+
+
+                points03, _, _ = triangulate_3d_points(flow0, flow3, 
+                                           cur_cam.calib_K, 
+                                           cur_cam.stereo_pair_cam.calib_K, 
                                            cur_cam.calib_R, 
                                            cur_cam.calib_t)
 
-                flow013_z = np.vstack([flow0, flow1, flow3])
-                y_meas = flow013_z if y_meas is None else np.vstack([y_meas, flow013_z])
+                points03 = points03.ravel().reshape(-1, 1)
+                z_cur = np.vstack([flow0, flow1, flow3])
+                z_global = z_cur if z_global is None else np.vstack([z_global, z_cur])
 
-                x0 = np.vstack([x0, points013.ravel().reshape(-1, 1)])
+                x0 = np.vstack([x0, points03])
 
-                flow013_json = np.hstack([flow0, flow1, flow3])
-                json_data['cam'+str(c)]['flow013'] = flow013_json.ravel().tolist()
-                json_data['cam'+str(c)]['flow013_init'] = points013.ravel().tolist()
-
+      
+            if self.use_temportal_stereo:
+                n_obs_j = cur_cam.flow_intra0.shape[0]
+            else:
+                n_obs_j = 0
             if n_obs_j > 0:
                 flow0 = cur_cam.flow_intra0
                 flow1 = cur_cam.flow_intra1
                 try:
-                    points01, terr01_0, terr01_1 = triangulate_3d_points(flow0, flow1, K0, K0, egomotion_rotation, egomotion_translation)
+                    points01, _, _ = triangulate_3d_points(flow0, flow1, K0, K0, cur_rotation, cur_translation)
                 except:
+                    import pdb; pdb.set_trace()
                     print('triangulate_3d_points failed ' )
                     return self.update_pose_by_prev_motion()
 
-
                 x0 = np.vstack([x0, points01.ravel().reshape(-1, 1)])
-                flow01_z = np.vstack([flow0, flow1])
-                y_meas = flow01_z if y_meas is None else np.vstack([y_meas, flow01_z])
-
-                flow01_json = np.hstack([flow0, flow1])
-                json_data['cam'+str(c)]['flow01'] = flow01_json.ravel().tolist()
-                json_data['cam'+str(c)]['flow01_init'] = points01.ravel().tolist()
+                z_cur = np.vstack([flow0, flow1])
+                z_global = z_cur if z_global is None else np.vstack([z_global, z_cur])
 
             cam_obs[index][0] = n_obs_i
             cam_obs[index][1] = n_obs_j
 
-        if y_meas is None or y_meas.shape[0] < 9:
-            print('y_meas is None' )
-            return self.update_pose_by_prev_motion()
+        if z_global is None or z_global.shape[0] < 9:
+            return None, None, None
 
         x0 = x0.flatten()
 
-        sparse_A = global_bundle_adjustment_sparsity(cam_obs, n_cams=num_cams) 
-
-        t0 = datetime.now()
-        res = None
-        err0 = self.global_fun(x0, cam_obs, y_meas, cam_list)
-
-        opt_failed = False
-
         try:
-            res = least_squares(self.global_fun, x0, args=(cam_obs, y_meas, cam_list), jac_sparsity=sparse_A, **LS_PARMS)
+            if self.points_params is False:
+                points_3d = x0[6:]
+                params = x0[0:6]
+                sparse_A = None
+            else:
+                points_3d = None
+                params = x0
+                sparse_A = compute_bundle_adjustment_sparsity(cam_obs, n_cams=num_cams) 
+
+
+            err0 = self.reprojection_error(x0, cam_obs, z_global, cam_list, points_3d)
+            res = least_squares(self.reprojection_error, params, args=(cam_obs, z_global, cam_list, points_3d), jac_sparsity=sparse_A, **LS_PARMS)
+            err1 = self.reprojection_error(res.x, cam_obs, z_global, cam_list, points_3d)
+
         except:
-            opt_failed = True
+            return None, None, None
         
-        # import pdb; pdb.set_trace()
+        return res, err0, err1
+
+
+    def computeEgomotion(self, img_idx=None, timestamp_ms = None, dt = None, cam_list=[0, 1]):
+        x0 = self.getLoggedInitMotion(img_idx)
+
+        if x0 is None or self.use_linear_seed == True:
+            x0 = self.getMonoInitMotion(cam_list)
+        
+        if x0 is None:
+            print('image_id {} timestam[ {}: computeEgomotion failed, unable to get initial motion', img_idx, timestamp_ms)
+            return None
+
+        
+        t0 = datetime.now()
+
+        res, err0, err1 = self.leastSquaresOpt(cam_list, x0)
+
         if res is None:
             opt_failed = True
-            print("optimization failed")
-            # return self.update_pose_by_prev_motion()
-        else:
-            t1 = datetime.now()
-            ego_elapsed = t1 - t0
-
-            err1 = self.global_fun(res.x, cam_obs, y_meas, cam_list)
-            reprojection_err = norm(err1)
-
-            R = cv2.Rodrigues(res.x[0:3])[0]
-            t = res.x[3:6]       
-
-            json_data['egomotion']['optimized'] = res.x[0:6].ravel().tolist()
-    
-            x_offset = 6
-            for c in cam_list:
-                n_obj_013, n_obj_01 = cam_obs[index]
-                if n_obj_013 > 0:      
-                    points013 = res.x[x_offset: x_offset + 3 * n_obj_013].flatten()
-                    json_data['cam'+str(c)]['flow013_opt'] = points013.tolist()
-                    x_offset += 3 * n_obj_013
-                    # import pdb ; pdb.set_trace()
-                    
-                if n_obj_01 > 0:
-                    points_01  = res.x[x_offset: x_offset + 3 *n_obj_01].flatten()
-                    json_data['cam'+str(c)]['flow01_opt'] = points_01.tolist()       
-                    x_offset += 3 * n_obj_01
-                # import pdb ; pdb.set_trace()
-
-        if os.path.exists(debug_json_path):
-            outfile = os.path.join(debug_json_path, 'frame'+str(img_idx)+'.json')
-            with open(outfile, 'w') as f:
-                json.dump(json_data, f, sort_keys=True, indent=4)
-
-        if opt_failed:
-            print('optimization failed')
+            print("1st optimization failed")
             return self.update_pose_by_prev_motion()
-        t = t.reshape(3,1)
 
-        acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(R, t, self.rotation_cam0_to_body, self.translation_cam0_to_body)
-        acs_rot_aa = cv2.Rodrigues(acs_rot)[0]
+
+        x0 = res.x[0:6].reshape(-1,1)
+        rotation_list, translation_list = self.transformMotionToCamerai(x0[0:3], x0[3:6])
+        masks = []
+        for index, cam_id  in enumerate(cam_list):
+            cur_cam = self.navcams[cam_id]
+
+            if cur_cam.flow_intra_inter0 is None:
+                continue
+            cur_rotation, cur_translation = rotation_list[cam_id], translation_list[cam_id]
+            
+            z_cur = np.vstack([cur_cam.flow_intra_inter0, cur_cam.flow_intra_inter1, cur_cam.flow_intra_inter3])
+
+
+            cam_obs_cur = np.zeros([1, 2], dtype=np.int)
+            cam_obs_cur[0][0] = cur_cam.flow_intra_inter0.shape[0]
+
+
+            if cur_cam.flow_intra_inter0.shape[0] <= 0:
+                continue
+            
+            points_3d_03, points_3d_01 = cur_cam.final_3d(x0[0:3], x0[3:6])
+
+            pt_err = norm(points_3d_03 - points_3d_01, axis=1)
+
+            err_cur = self.reprojection_error(x0, cam_obs_cur, z_cur, [cam_id], points_3d_03).reshape(-1,2)
+            err_cur_norm = norm(err_cur, axis=1)
+            mask_2d = err_cur_norm < 1.0
+            
+            thresh_3d = 0.5
+            while np.sum( pt_err < thresh_3d) < 10:
+                thresh_3d *= 2.0
+                if thresh_3d > 10.0:
+                    break
+ 
+            mask_3d = pt_err < thresh_3d
+            masks.append(mask_2d)
+
+            mask = mask_2d# & mask_3d
+
+            flow0 = self.navcams[cam_id].flow_intra_inter0
+            flow1 = self.navcams[cam_id].flow_intra_inter1
+            flow3 = self.navcams[cam_id].flow_intra_inter3
         
-
-        acs_rot_aa2, acs_trans2 = transform_velocity_from_frame_a_to_b(res.x[0:3], res.x[3:6], self.rotation_cam0_to_body, self.translation_cam0_to_body)
+            # self.vis3(cam_id, img_idx, flow0, flow1, flow3, res.x[0:3], res.x[3:6])
         
+        # res, _, err2 = self.leastSquaresOpt(cam_list, x0, None)
 
-        # Note: the actual egomotion should be inverted as we estimate R,t from current feature to previous 
-        avg_reprojection_err = reprojection_err / float(np.sum(cam_obs))
-
-        print('img:' + str(self.navcams[0].img_idx), 
-                'rot0 [%.3f, %.3f, %.3f]' % (rot0[0], rot0[1], rot0[2]),  
-                'rot1 [%.3f, %.3f, %.3f]' % (res.x[0], res.x[1], res.x[2]),  
-                'trans0 [%.3f, %.3f, %.3f]'  % (trans0[0], trans0[1], trans0[2]), 
-                'trans1 [%.3f, %.3f, %.3f]'  % (t[0], t[1], t[2]), 
-                'proj_err [%.3f, %.3f]' % (norm(err0), norm(err1)))
-        
-
-        if self.syncer:
-            Rw0 = self.syncer.get_closest_orentation(self.img_idx)
-
-        gps_ned_vel = self.syncer.get_current_gps_vel(img_idx).reshape(3, 1)
-        gps_body = Rw0.T.dot(gps_ned_vel)
-
-        ang_vel_est = acs_rot_aa  / time_diff
-        lin_vel_est = acs_trans  / time_diff
-
-        large_vel_detected = False
-        for i in range(3):
-            if lin_vel_est[i] > MAX_BODY_VEL[i]:
-                large_vel_detected = True
-                lin_vel_est[i] = min(lin_vel_est[i], MAX_BODY_VEL[i])
+        if res is None:
+            opt_failed = True
+            print("2nd optimization failed")
+            return self.update_pose_by_prev_motion()
 
 
-        ned_lin_vel_est = Rw0.dot(lin_vel_est)
+        t1 = datetime.now()
+        computation_delay = t1 - t0
+       
+        velocity_ned, velocity_body = self.computeLinearVelocity(res.x, img_idx, dt)
+
+        if self.points_params:
+            covariance_ned, covariance_body = self.computeCovariance(res.jac.toarray(), img_idx, dt * dt )        
+        else:
+            covariance_ned, covariance_body = self.computeCovariance(res.jac, img_idx, dt * dt )
+
+        gps_ned_vel = self.gpsNedVelocity(img_idx-1)
+
+        valid_vel = True
+        valid_vel = self.acc_flt.filter(velocity_body, covariance_body, self.curr_timestamp)
+        if valid_vel:
+            self.acc_flt.UpdateState(velocity_body, covariance_body, self.curr_timestamp)
+
+        print('image_id: {} timestamp_ms: {} valid: {} err0: {} err1: {}'.format(img_idx, 
+                                                                                 self.curr_timestamp, 
+                                                                                 valid_vel, 
+                                                                                 round(np.linalg.norm(err0), 4), 
+                                                                                 round(np.linalg.norm(err1), 4)))
+
+        try:
+            velocity_ned_cpp = self.kl.vo_dict['ned_lin_vel'][img_idx-1]
+            print('Est-CPP-Norm: {} N: {} E: {} D: {}'.format(round(np.linalg.norm(velocity_ned_cpp),4), 
+                                                            round(velocity_ned_cpp[0], 4), 
+                                                            round(velocity_ned_cpp[1], 4), 
+                                                            round(velocity_ned_cpp[2], 4)))
+        except:
+            pass
+
+        print(' Est-PY-Norm: {} N: {} E: {} D: {}'.format(round(np.linalg.norm(velocity_ned),4), 
+                                                        round(velocity_ned[0], 4), 
+                                                        round(velocity_ned[1], 4), 
+                                                        round(velocity_ned[2], 4)))
 
 
-        print('======================================')
-
-        print('ts: %d | bd-gps-mot: [%.3f, %.3f, %.3f], norm: %f' % (
-            ts, 
-            gps_body[0], 
-            gps_body[1], 
-            gps_body[2],
-            norm(gps_body)))
+        print('    GPS-Norm: {} N: {} E: {} D: {}'.format(round(np.linalg.norm(gps_ned_vel),4), 
+                                                        round(gps_ned_vel[0], 4), 
+                                                        round(gps_ned_vel[1], 4), 
+                                                        round(gps_ned_vel[2], 4)))
 
 
-        print('ts: %d | bd-est-mot: [%.3f, %.3f, %.3f], norm: %f' % (
-            ts, 
-            lin_vel_est[0], 
-            lin_vel_est[1], 
-            lin_vel_est[2], 
-            norm(lin_vel_est)
-            ))
+        # import pdb; pdb.set_trace()
+        # self.navcams[0].debug_inter_keypoints(self.navcams[0].flow_intra_inter0, self.navcams[0].flow_intra_inter3, '/tmp/pyego/')
+
+        # Log results
+        try:
+            json_line = self.json_log_list[img_idx]
+            json_line["body_lin_vel"] = velocity_body.tolist()
+            json_line["ned_lin_vel"] = velocity_ned.tolist()
+            json_line["gps_ned_vel"] = gps_ned_vel.tolist()
+
+            # json_line["body_lin_vel_conf"] = covariance_body.tolist()
+            # json_line["ned_lin_vel_conf"] = covariance_ned.tolist()
+            json_line["status"] = int(not valid_vel)
+            if self.json_motion_log:
+                json.dump(json_line, self.json_motion_log, sort_keys=True)
+                self.json_motion_log.write('\n')            
+        except:
+            print('Cannot log the VO results')
+        print('=================================================\n\n')
 
 
-        opt_pts = res.x[6:].reshape(-1,3)
-        opt_pts_depth = opt_pts[:,2]
-        opt_mask = np.logical_and(opt_pts_depth < MAX_DEPTH, opt_pts_depth > MIN_DEPTH)
+    def computeCovariance(self, jacobian, img_idx, dtdt):
+        if self.points_params:
+            cov_cam = covarinace_svd(jacobian)
+        else:
+            cov_cam = covariance_mvg_A6_4(jacobian)
 
-        jac = res.jac.toarray()
-        cov_cam = covariance_mvg_A6_4(jac, opt_mask)
-        cov_cam2 = covarinace_svd(jac)
-
-        
         aug_rot0 = np.zeros([6, 6])
         aug_rot0[0:3,0:3] = self.rotation_cam0_to_body
         aug_rot0[3:6,3:6] = self.rotation_cam0_to_body
-
         aug_rot1 = np.zeros([6, 6])
-        aug_rot1[0:3,0:3] = Rw0
-        aug_rot1[3:6,3:6] = Rw0
-
+        orentation_to_ned = self.orientatonToNed(img_idx)
+        aug_rot1[0:3,0:3] = orentation_to_ned
+        aug_rot1[3:6,3:6] = orentation_to_ned
         cov_body = aug_rot0.dot(cov_cam).dot(aug_rot0.T)
         cov_ned = aug_rot1.dot(cov_body).dot(aug_rot1.T)
-
         cov_body_diag = cov_body.diagonal()
         cov_ned_diag = cov_ned.diagonal()
-
-
-        dtdt = time_diff * time_diff
         lin_cov_body = cov_body_diag[3:6] / dtdt
-        ang_cov_body = cov_body_diag[0:3] / dtdt
         lin_cov_ned = cov_ned_diag[3:6] / dtdt
+        lin_cov_body_norm = np.linalg.norm(lin_cov_body)
+        lin_cov_ned_norm = np.linalg.norm(lin_cov_ned)
+        # if lin_cov_body_norm > 10.0 or lin_cov_ned_norm > 10.0:
+        #     lin_cov_body = 1.0
+        #     lin_cov_ned = 1.0
+        return lin_cov_body, lin_cov_ned
 
-        print('ts: %d | con-lin: [%.3f, %.3f, %.3f] | val: %d' % (
-            ts, 
-            lin_cov_body[0], 
-            lin_cov_body[1], 
-            lin_cov_body[2], 
-            res.success))
+    def computeLinearVelocity(self, x_opt, img_idx, dt):
+        rot_vec_body, trans_vec_body = transformVelocityFromAToB(x_opt[0:3], x_opt[3:6], 
+                                                                 self.rotation_cam0_to_body, self.translation_cam0_to_body)
+        orentation_to_ned = self.orientatonToNed(img_idx)
 
-        print('======================================')
-
-
-        norm_diff_gps = abs(norm(gps_body) - norm(lin_vel_est))
-        norm_diff_gps_ratio = norm_diff_gps / abs(norm(gps_body))
-
-        norm_diff_prev = norm(self.prev_trans) - norm(lin_vel_est)
-        max_acc = 6
-        cur_acc = norm_diff_prev / time_diff
-
-        # if norm_diff_gps_ratio > 0.5:
-        #     import pdb; pdb.set_trace()
-
-        valid = True
-        if (cur_acc > max_acc and res.success == False) or avg_reprojection_err > 10 or large_vel_detected:
-            valid = False
-            for i in range(3):
-                ang_cov_body[i] = 9.9
-                lin_cov_body[i] = 9.9
-                lin_cov_ned[i] = 9.9   
-
-        
-        self.nonUniqueSolutionDetetion(res.x, cam_obs, y_meas, cam_list)
-        # import pdb; pdb.set_trace()
-
-# ============================================
-        jo = self.syncer.get_json_object(img_idx)
-        jo['body_ang_vel'] = ang_vel_est.tolist()
-        jo['body_lin_vel'] = lin_vel_est.tolist()
-        jo['ned_lin_vel'] = ned_lin_vel_est.tolist()
-
-
-        jo['body_ang_vel_conf'] = ang_cov_body.tolist()
-        jo['body_lin_vel_conf'] = lin_cov_body.tolist()
-        jo['ned_lin_vel_conf'] = lin_cov_ned.tolist()
+        body_line_vel = trans_vec_body / dt
+        ned_lin_vel = orentation_to_ned.dot(body_line_vel)
+        return ned_lin_vel.ravel(), body_line_vel.ravel()
     
-        jo['body_lin_vel_status'] = valid
-        jo['body_ang_vel_status'] = valid
+    def updateTimestamp(self, timestamp):
+        self.prev_timestamp = self.curr_timestamp
+        self.curr_timestamp = timestamp
+        dt = (timestamp - self.prev_timestamp) / 1e3
+        if dt <= 0 or dt > 1.0:
+            dt = 1.0
+        return dt
+   
 
-        jo['init_motion'] = x0[0:6].tolist()
-        jo['opt_motion'] = res.x[0:6].tolist()
-
-        list_json = [jo[k] for k in self.syncer.get_json_keys()]
-        if self.csv_writer:
-            self.csv_writer.writerow(list_json)
-        if self.json_log_file:
-            json.dump(jo, self.json_log_file, sort_keys=True)
-            self.json_log_file.write('\n')
-# ============================================
-        if avg_reprojection_err > AVG_REPROJECTION_ERROR:
-            self.prev_invalid = True
-            print('*****reject the results: reprojection error: ' + str(reprojection_err) + ' avg reprjection error: ' + str(avg_reprojection_err))
-            return self.update_pose_by_prev_motion()
-        
-        self.prev_egomotion = res.x[0:6]
-        self.prev_invalid = False
-
-        if DATASET == 'kite':
-            self.prev_rot = ang_vel_est.reshape(3,1)
-            self.prev_trans = ned_lin_vel_est.reshape(3,1)
-        
-        pose_R, pose_t = self.update_global_camera_pose_egomotion(acs_rot, acs_trans)
-        return pose_R, pose_t 
-        
 def _main(args):
     input_path = os.path.expanduser(args.images_path)
-    output_path = os.path.expanduser(args.output_path)
     calib_file = os.path.expanduser(args.calib_path)
-    json_enabled = args.enable_json
-    num_features = args.num_features
+
+    json_init_path = os.path.expanduser(args.json_init_path)
+    linear_seed_enabled = int(args.linear_seed_enabled)
+
+
     num_cam = args.num_cameras
-    dataset = args.dataset_type.lower()
-    seq = ("%02d" % (args.seq_num))  if (dataset == 'kitti') else str(args.seq_num)
-    external_json_pose = args.external_json_pose
-    json_feature_path = args.json_feature_path
+    num_features = args.num_features
+    temportal_stereo_enabled = args.temportal_stereo_enable
+    points_param_enable = args.points_param_enable
 
     if not os.path.exists(calib_file):
-        raise Exception('no valid calib fie')
+        print('no valid calib fie')
+        return  
 
-    if not os.path.exists(output_path):
-        os.mkdir(output_path)
+    
 
-    em_pars = dict(input_path=input_path, 
-                   data_seq=seq, 
-                   calib_file=calib_file, 
-                   num_features=num_features, 
-                   dataset=dataset, 
-                   json_output=json_enabled)
+    em_pars = dict(image_path= input_path, 
+                   calib_file= calib_file, 
+                   output_path = '/tmp/pyego',
+                   num_features = num_features, 
+                   init_json_path = json_init_path,
+                   num_cams = num_cam,
+                   temportal_stereo = temportal_stereo_enabled,
+                   points_params = False)
 
     kv = EgoMotion(**em_pars)
+    # failed_indexs = kv.get_failed_kite_list()
 
-    traj = np.zeros((960, 1280, 3), dtype=np.uint8)
+    # for img_id in range(kv.num_imgs):
+    #     images, timestamp_ms = kv.getOneImage(img_id)
+    #     dt = kv.updateTimestamp(timestamp_ms)
+    #     kv.uploadImages(images)
+    #     if img_id < 2500:
+    #         continue
+    #     # print('img_id = ', img_id)
+    #     if img_id in failed_indexs:
+    #         kv.keypointsDetection(img_id)
+    #         # kv.updateInterOptflow()
+    #         # kv.updateIntraOptflow()
+    #         kv.updateCircularOptflow()
+    #         kv.outliersRejection(True)
+    #         kv.computeEgomotion(img_id, timestamp_ms, dt, cam_list=CAMERA_LIST)
 
-    text = "N/E Traj by Fight Control"
-    cv2.line(traj,(700, 78),(750, 78),(255,255,255),2)
-    cv2.putText(traj, text, (775, 85), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-
-    text = "N/E Traj by Vision with One IMU Sample Every Frame"
-    cv2.line(traj,(700, 98),(750, 98),EGOMOTION_TRAJ_COLOR,2)
-    cv2.putText(traj, text, (775, 105), cv2.FONT_HERSHEY_PLAIN, 1, EGOMOTION_TRAJ_COLOR, 1, 8)
-
-    traj_index = 0
-    json_pose = None
-    n_json_pose = 0
-    if external_json_pose:
-        external_json_pose = os.path.expanduser(args.external_json_pose)
-        with open(external_json_pose) as f:
-            json_pose = json.load(f)
-            n_json_pose = json_pose['num_poses']
-
-    x, y, z = np.array([0., 0., 0.]).reshape(3,1)
-    global_tr = [0, 0, 0]
-
-    for img_id in range(kv.num_imgs):
-        if img_id > NUM_FRAMES:
-            break
-        if img_id < START_INDEX:
-            continue
-        
-        if dataset == 'kitti':
-            kv.load_kitti_gt(img_id)
-
-        camera_images, ts = kv.read_one_image(img_id)
-
-        if camera_images == None:
-            continue
-        kv.upload_images_acsmeta(camera_images, ts)
-        if external_json_pose:
-            if img_id < 1:
-                global_tr = [0, 0, 0]
-                continue
-            
-            if img_id >= n_json_pose:
-                break
-            frame_name = 'frame' + str(img_id)
-            try:
-                estimated_rt = json_pose[frame_name]['optimized']
-                R = np.array([estimated_rt[0:3]])
-                R = cv2.Rodrigues(R)[0]
-                t = np.array([estimated_rt[3:]]).reshape(3,1)
-                # import pdb; pdb.set_trace()
-                acs_rot, acs_trans = transform_egomotion_from_frame_a_to_b(
-                        R, t, kv.rotation_cam0_to_body, kv.translation_cam0_to_body)
-
-                print(frame_name, img_id, estimated_rt)
-                _, global_tr = kv.update_global_camera_pose_egomotion(acs_rot, acs_trans.reshape(3,1))
-            except:
-                print('warning, no ' + frame_name + ' estimation from json')
-                global_tr = kv.pose_t
-        else:
-            if json_feature_path is None:
-                kv.update_keypoints(img_id)
-                kv.update_inter_optflow()
-                kv.update_intra_optflow()
-
-                kv.outliers_removal(debug=DEBUG_KEYPOINTS)
-            else:
-                kv.load_features_from_json(json_feature_path)
-
-            global_rot, global_tr = kv.egomotion_solver(img_id, ts,
-                                                        cam_list=CAMERA_LIST, 
-                                                        debug_json_path=PYEGO_DEBUG_OUTPUT)
-
-
-        if img_id == 0:
-            x, y, z = 0, 0, 0
-        else:
-            x, y, z = global_tr[0], global_tr[1], global_tr[2]
-
-        print('===================')
-        print('img_id', img_id)
-        print('Benchmark Position', kv.trueX, kv.trueY, kv.trueZ)
-        print('Egomotion Position', x, y, z)
-        print('===================')
-
-        draw_ofs_x = 750
-        draw_ofs_y = 450
-        if DATASET == 'kitti':
-            draw_x0, draw_y0 = int(x) + draw_ofs_x, int(z) + draw_ofs_y    
-            true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueZ) + draw_ofs_y
-        else:
-            draw_x0, draw_y0 = int(x) + draw_ofs_x, int(y) + draw_ofs_y  
-            current_true_pose = np.array(kv.get_acs_pose(img_id))
-
-            if current_true_pose is not None:
-                global_positon = current_true_pose.reshape(1,3) - kv.initial_origin.reshape(1,3)
-                kv.trueX, kv.trueY, kv.trueZ = global_positon.reshape(-1,)
-            true_x, true_y = int(kv.trueX) + draw_ofs_x, int(kv.trueY) + draw_ofs_y
-
-        cv2.circle(traj, (draw_x0, draw_y0), 1, EGOMOTION_TRAJ_COLOR, 1)
-        cv2.circle(traj, (true_x,true_y), 1, GT_TRAJ_COLOR, 2)
-
-
-
-        cv2.rectangle(traj, (700, 120), (1280, 200), (0,0,0), -1)
-
-        if dataset == 'kitti':
-            text = "Image: %d: X= %.2fm Y= %.2fm Z= %.2fm"%(img_id, x, y, z)
-            cv2.putText(traj, text, (700,140), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-        else:
-            text = "Img: %d N: %.2fm E: %.2fm D: %.2fm"%(img_id, x, y, z)
-
-            text1 = "Trajectory Err:      [N: %8.1f%%, E: %8.1f%%, D: %8.1f%%]"%( 
-                100 * abs(abs(kv.trueX) - abs(x)) / abs(x),
-                100 * abs(abs(kv.trueY) - abs(y)) / abs(y),
-                100 * abs(abs(kv.trueZ) - abs(z)) / abs(z))
-
-            # text2 = "Linear Velocity Err: [N: %8.1f%%, E: % 8.1f%%, D: % 8.1f%%]"%(
-            #     kv.ned_vel_err[0], 
-            #     kv.ned_vel_err[1], 
-            #     kv.ned_vel_err[2])
-
-            cv2.putText(traj, text, (700,140), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-            cv2.putText(traj, text1, (700,160), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-            # cv2.putText(traj, text2, (700,180), cv2.FONT_HERSHEY_PLAIN, 1, (255,255,255), 1, 8)
-
-        img_bgr = []
-        for i in CAMERA_LIST:
-            img = cv2.resize(cv2.cvtColor(camera_images[i], cv2.COLOR_GRAY2BGR), (320, 240))
-            img_bgr.append(img)
-        img_ = concat_images_list(img_bgr)
-        img_ = cv2.imread(kv.camera_images[img_id])
-        img_ = cv2.resize(img_, (640, 960))
-
-
-        h1, w1 = img_.shape[:2]
-        traj[:h1, :w1,:3] = img_
-        traj_name = str(traj_index) + '.jpg'
-        traj_index += 1
-        cv2.imwrite(os.path.join(output_path, traj_name), traj)
-    # Close and release the log file object
     kv.close()
 
 if __name__ == '__main__':

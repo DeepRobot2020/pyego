@@ -53,26 +53,26 @@ def generateImageMask(vertices, image_shape = (640, 480)):
     return roi_mask
     
 
-img_file = '/home/jzhang/vo_data/HDZ_Mask/4x1_hdz2/306.jpg'
-import pdb; pdb.set_trace()
+img_file = '/home/jzhang/vo_data/20190215F02_SR80_201010761_NAV_0003/99.jpg'
 imgx4 = split_kite_vertical_images(img_file)
 
 
-for i in range(len(imgs_x4)):
-    plt.imshow(imgs_x4[i])
-    pkt.show()
+# for i in range(len(imgx4)):
+#     plt.imshow(imgx4[i], cmap='gray')
+#     plt.show()
     # cv2.imwrite('/tmp/split' + str(i) + '.jpg', imgs_x4[i])
 
+import pdb; pdb.set_trace()
 rois = []
 for i in range(0, 4):
     print(i)
     roi = generateImageMask(KITE_MASK_VERTICES[i])
     rois.append(roi)
-    print(i, 'done')
+
 
 for i in range(0, 4):
     plt.imshow(rois[i])
     plt.show()
 
 
-import pdb; pdb.set_trace()
+# import pdb; pdb.set_trace()

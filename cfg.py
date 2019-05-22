@@ -9,66 +9,46 @@ DATASET = 'kite'
 
 CAMERA_LIST = [0, 1, 2, 3]
 
-NUM_FRAMES  = 100
 
-if DATASET == 'kitti':
-    INPUT_IMAGE_PATH='/home/jzhang/vo_data/dataset'
-    INPUT_CALIB_PATH='/home/jzhang/Downloads/dataset/sequences/02/calib.txt'
-    EGOMOTION_SEED_OPTION = 0 # 0: 5 point algorithem
-    CAMERA_LIST = [0, 1]
-else:
-    # configs for KITI dataset
-    KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
-    INPUT_IMAGE_PATH = ''
-    ACS_META = ''
-    INPUT_CALIB_PATH ='/home/jzhang/vo_data/SR80_901020874/nav_calib.cfg'
-    KITE_UNDISTORION_NEEDED = True
-    EGOMOTION_SEED_OPTION = 1  # 0: 5 point algorithem, 1: Velocity 2: Pose 3: prev
-    KITE_SKIP_IMAGE_FACTOR = 0
-    # KITE_OUTPUT_POSE_PATH = '/tmp/kite/kv_egomotion.json'
+KITE_VIDEO_FORMAT = '4x1' # 2x2, 4x1, 1x1
+ACS_META = ''
 
-if not os.path.exists(INPUT_IMAGE_PATH):
-    INPUT_IMAGE_PATH = os.environ["VO_IMG"]
+INPUT_CALIB_PATH ='/tmp/nav_calib.cfg'
+# INPUT_CALIB_PATH ='/home/jzhang/CalibData/SRH248-1/nav_calib.cfg'
 
-if os.path.exists(INPUT_IMAGE_PATH):
-    PYEGO_DEBUG_OUTPUT = os.path.join(INPUT_IMAGE_PATH, 'pyego')
-    if not os.path.exists(PYEGO_DEBUG_OUTPUT):
-        os.makedirs(PYEGO_DEBUG_OUTPUT)
+KITE_UNDISTORION_NEEDED = True
 
-if not os.path.exists(ACS_META):
-    ACS_META = os.path.join(INPUT_IMAGE_PATH, 'vo.json')
+VO_INIT_JSON = os.environ["VO_INI"]
+INPUT_IMAGE_PATH = '/tmp/kite/images/' #os.environ["VO_IMG"]
 
-STEREO_RECTIFY_ENABLED = False
-START_INDEX = 0
+VO_KITE_LOG = '/tmp/kite/2019-04-29-14-52-37.json'
+
+PYEGO_DEBUG_OUTPUT = os.path.join(INPUT_IMAGE_PATH, 'pyego')
+if not os.path.exists(PYEGO_DEBUG_OUTPUT):
+    os.makedirs(PYEGO_DEBUG_OUTPUT)
+
+
 MAX_BODY_VEL = [40/3.6, 40/3.6, 40/3.6]
 MAX_COV_VAL = 99.99
 
 MIN_DEPTH = 0.5
-MAX_DEPTH = 55.5
+MAX_DEPTH = 1e6
 
-KITE_OUTPUT_POSE_PATH = '/tmp/kite/avl.json'
-KITE_OUTPUT_POSE_PATH = None
-
-
-
-EGOMOTION_TRAJ_COLOR = (0, 255, 0)
-GT_TRAJ_COLOR = (255, 255, 255)
 
 IMU_TO_BODY_ROT = np.array([0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0, 1]).reshape(3, 3)
-# IMU_TO_BODY_ROT = IMU_TO_BODY_ROT.T
 
 # Features for egomotion
 AVG_REPROJECTION_ERROR = 5
-USE_01_FEATURE = True
+USE_01_FEATURE = False
 TWO_VIEW_FEATURE_WEIGHT = 1.0 
 
 DEBUG_KEYPOINTS = True
 
 KITE_KPTS_PATH = '/tmp/kite/'
 
-SHI_TOMASI_MIN_DISTANCE  = 8
-SHI_TOMASI_QUALITY_LEVEL = 0.05
-MAX_NUM_KEYPOINTS        = 100 
+SHI_TOMASI_MIN_DISTANCE  = 12
+SHI_TOMASI_QUALITY_LEVEL = 0.0001
+MAX_NUM_KEYPOINTS        = 64 
 SCIPY_LS_VERBOSE_LEVEL   = 0
 
 FIVE_POINTS_ALGO_PROB_THRESHOLD = 0.9
@@ -77,14 +57,15 @@ FIVE_POINTS_ALGO_EPI_THRESHOLD = 1e-2
 # Optflow 
 INTRA_OPTFLOW_WIN_SIZE = (16, 16)
 INTER_OPTFLOW_WIN_SIZE = (16, 16)
+CIRCULAR_OPTFLOW_WIN_SIZE = (16, 16)
 
 # Constans control the egomotion feature erros
-INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD = 15
-INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD = 15
+INTRA_OPT_FLOW_DESCRIPTOR_THRESHOLD = 10
+INTER_OPT_FLOW_DESCRIPTOR_THRESHOLD = 10
 
-INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD = 0.2
-INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD = 0.2
-INTER_OPT_FLOW_EPILINE_ERROR_THRESHOLD = 5e-4
+INTRA_OPT_FLOW_FW_BW_ERROR_THRESHOLD = 0.25
+INTER_OPT_FLOW_FW_BW_ERROR_THRESHOLD = 0.25
+INTER_OPT_FLOW_EPILINE_ERROR_THRESHOLD = 1e-3
 
 
 # Constants to control the egomotion LS 
@@ -92,31 +73,10 @@ LS_PARMS = dict(max_nfev=20,
                 verbose=SCIPY_LS_VERBOSE_LEVEL,
                 x_scale='jac',
                 jac='3-point',
-                ftol=1e-6,
-                xtol=1e-6,
-                gtol=1e-6,
+                ftol=1e-10,
+                xtol=1e-10,
+                gtol=1e-10,
                 method='trf')
-
-
-TX2_TIMESTAMP_INDEX = 0
-DSP_TIMESTAMP_INDEX = 1
-
-ACS_POSITION_X     = 2
-ACS_POSITION_Y     = 3
-ACS_POSITION_Z     = 4
-
-ACS_POSITION_X_DOT = 5
-ACS_POSITION_Y_DOT = 6
-ACS_POSITION_Z_DOT = 7
-
-ACS_ORIENTATION_PHI       = 8
-ACS_ORIENTATION_THETA     = 9
-ACS_ORIENTATION_PSI       = 10
-
-ACS_ORIENTATION_PHI_DOT   = 11
-ACS_ORIENTATION_THETA_DOT = 12
-ACS_ORIENTATION_PSI_DOT   = 13
-
 
 vertices_large_0 = np.array([ (557, 0), (639, 0), (639, 125), (436, 293), (386, 272), (557, 0)], dtype=np.int32)
 vertices_small_0 = np.array([(0, 217), (134, 244), (134, 295), (0, 247), (0, 217)], dtype=np.int32) 
